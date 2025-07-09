@@ -1,6 +1,7 @@
 import { AntDesign, MaterialCommunityIcons, MaterialIcons } from '@expo/vector-icons';
 import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
+import { useRouter } from 'expo-router';
 import { createUserWithEmailAndPassword } from 'firebase/auth';
 import { get, onValue, ref, remove, set, update } from 'firebase/database';
 import React, { useEffect, useState } from 'react';
@@ -29,12 +30,16 @@ const bgImage = require('../assets/images/bg.jpg');
 
 export default function AdminDashboard() {
   const [modalVisible, setModalVisible] = useState(false);
+  const [showProfileMenu, setShowProfileMenu] = useState(false);
+  const router = useRouter();
   const [newTeacher, setNewTeacher] = useState<Teacher>({ name: '', email: '', contact: '', school: '', password: '', accountId: '', teacherId: '' });
   const [teachers, setTeachers] = useState<Teacher[]>([]);
   const [teacherIdCounter, setTeacherIdCounter] = useState(0);
   const [selectedTeacher, setSelectedTeacher] = useState<Teacher | null>(null);
   const [editMode, setEditMode] = useState(false);
   const [editTeacher, setEditTeacher] = useState<Teacher | null>(null);
+  const [classes, setClasses] = useState<any[]>([]);
+  const [students, setStudents] = useState<any[]>([]);
 
   const windowWidth = Dimensions.get('window').width;
   const numColumns = windowWidth < 400 ? 1 : windowWidth < 600 ? 2 : 3;
@@ -102,14 +107,14 @@ export default function AdminDashboard() {
 
   // Register teacher handler (mock)
   async function handleRegisterTeacher() {
-    if (!newTeacher.name || !newTeacher.email || !newTeacher.contact || !newTeacher.school) {
+    if (!newTeacher.name || !newTeacher.email || !newTeacher.contact || !newTeacher.school || !newTeacher.password) {
       Alert.alert('All fields are required');
       return;
     }
     setModalVisible(false);
     try {
       // 1. Create user in Firebase Auth
-      const userCredential = await createUserWithEmailAndPassword(auth, newTeacher.email, newTeacher.password);
+      const userCredential = await createUserWithEmailAndPassword(auth, newTeacher.email, newTeacher.password!);
       const teacherUid = userCredential.user.uid;
       // 2. Generate system teacher ID
       const teacherId = await generateNextTeacherId();
@@ -121,15 +126,12 @@ export default function AdminDashboard() {
         email: newTeacher.email,
         contact: newTeacher.contact,
         school: newTeacher.school,
-        numClasses: newTeacher.numClasses ?? 0,
-        numStudents: newTeacher.numStudents ?? 0,
-        avgImprovement: newTeacher.avgImprovement ?? 0,
+        // avgImprovement, numClasses, and numStudents removed for normalization
       };
       await set(ref(db, `Teachers/${teacherUid}`), teacherData);
       // 4. Add UID to Roles/Teacher
       await update(ref(db, 'Roles'), { [`Teacher/${teacherUid}`]: true });
-      // 5. Update local state
-      setTeachers(prev => [...prev, teacherData]);
+      // 5. DO NOT update local state here! (Removed setTeachers to prevent duplicates)
       Alert.alert('Success', `${newTeacher.name} has been registered as a teacher.`);
       setNewTeacher({ name: '', email: '', contact: '', school: '', password: '', accountId: '', teacherId: '' });
     } catch (error: any) {
@@ -168,38 +170,84 @@ export default function AdminDashboard() {
   // New Effectiveness Bar Chart component
   function EffectivenessBarChart({ data }: { data: ChartData[] }) {
     const windowWidth = Dimensions.get('window').width;
-    const chartWidth = Math.min(windowWidth - 48, 420); // 24px padding each side, max 420
+    const chartWidth = Math.min(windowWidth -90, 420);
     const barCount = data.length;
-    const barSpacing = 12;
-    const barWidth = Math.max(18, Math.floor((chartWidth - (barCount - 1) * barSpacing) / barCount));
+    const barSpacing = 14;
+    const barWidth = Math.max(20, Math.floor((chartWidth - (barCount - 1) * barSpacing) / barCount));
     const maxValue = Math.max(...data.map((d: ChartData) => d.value), 1);
-    const fontSizeLabel = windowWidth < 400 ? 11 : 13;
-    const fontSizeValue = windowWidth < 400 ? 10 : 12;
+    const fontSizeLabel = windowWidth < 400 ? 10 : 14;
+    const fontSizeValue = windowWidth < 400 ? 10 : 13;
+    
     return (
-      <View style={{ alignItems: 'center', marginVertical: 18, width: '100%' }}>
-        <Text style={{ fontWeight: 'bold', fontSize: 20, color: '#27ae60', marginBottom: 8 }}>App Effectiveness Overview</Text>
-        <View style={{ flexDirection: 'row', alignItems: 'flex-end', height: 120, width: chartWidth, justifyContent: 'space-between', marginBottom: 8, marginTop: 24 }}>
-          {data.map((d: ChartData, idx: number) => (
-            <View key={d.label + '-' + idx} style={{ alignItems: 'center', flex: 1, marginHorizontal: barSpacing / 2 }}>
-              <View style={{ height: (d.value / maxValue) * 100 + 10, width: barWidth, backgroundColor: d.color, borderRadius: 8, marginBottom: 4 }} />
-              <Text style={{ fontSize: fontSizeLabel, color: '#222', fontWeight: '600', textAlign: 'center' }}>{d.label}</Text>
-              <Text style={{ fontSize: fontSizeValue, color: '#888', textAlign: 'center' }}>{d.value}</Text>
-            </View>
-          ))}
+      <View style={{ alignItems: 'center', width: '100%' }}>
+        <View style={styles.chartHeader}>
+
+          <Text style={styles.chartTitle}>App Effectiveness Overview</Text>
         </View>
-        <Text style={{ fontSize: 13, color: '#444', marginTop: 2, textAlign: 'center' }}>Distribution of student improvement across all teachers</Text>
+        <View style={styles.chartContainer}>
+          <View style={{ flexDirection: 'row', alignItems: 'flex-end', height: 140, width: chartWidth, justifyContent: 'space-between', marginBottom: 16, marginTop: 8 }}>
+            {data.map((d: ChartData, idx: number) => (
+              <View key={d.label + '-' + idx} style={{ alignItems: 'center', flex: 1, marginHorizontal: barSpacing / 2 }}>
+                <View style={styles.barContainer}>
+                  <View 
+                    style={[
+                      styles.bar, 
+                      { 
+                        height: (d.value / maxValue) * 75 + 20, 
+                        width: barWidth, 
+                        backgroundColor: d.color,
+                        shadowColor: d.color,
+                        shadowOpacity: 0.3,
+                        shadowRadius: 4,
+                        shadowOffset: { width: 0, height: 2 },
+                        elevation: 3,
+                      }
+                    ]} 
+                  />
+                </View>
+                <Text
+                  style={[styles.barLabel, { fontSize: fontSizeLabel, minWidth: 48, textAlign: 'center' }]}
+                  numberOfLines={1}
+                  ellipsizeMode="tail"
+                >
+                  {d.label}
+                </Text>
+                <Text style={[styles.barValue, { fontSize: fontSizeValue }]}>{d.value}</Text>
+              </View>
+            ))}
+          </View>
+        </View>
+        <Text style={styles.chartDescription}>Distribution of student improvement across all teachers</Text>
       </View>
     );
   }
 
-  // New improvement distribution data
-  const improvementDistribution = [
-    { label: '0-10%', value: 2, color: '#ffb37b' },
-    { label: '11-25%', value: 5, color: '#ffe066' },
-    { label: '26-50%', value: 8, color: '#7ed957' },
-    { label: '51-75%', value: 4, color: '#27ae60' },
-    { label: '76-100%', value: 1, color: '#0097a7' },
+  // Remove the static improvementDistribution and compute it from real data
+  // Define green color palette for the bars
+  const improvementBins = [
+    { label: '0-10%', min: 0, max: 10, color: '#e6f4ea' },   // very light mint green
+    { label: '11-25%', min: 11, max: 25, color: '#c2e8cd' }, // pale leafy green
+    { label: '26-50%', min: 26, max: 50, color: '#a0d9b5' }, // soft balanced green
+    { label: '51-75%', min: 51, max: 75, color: '#7ccc98' }, // mild mid-green
+    { label: '76-100%', min: 76, max: 100, color: '#5bbd7d' } // muted emerald green
   ];
+  
+
+  // Compute improvement distribution from students
+  const improvementDistribution: ChartData[] = (() => {
+    // Calculate improvement for each student
+    const improvements = students.map(stu => {
+      const pre = typeof stu.preScore === 'number' ? stu.preScore : (stu.preScore?.pattern ?? 0) + (stu.preScore?.numbers ?? 0);
+      const post = typeof stu.postScore === 'number' ? stu.postScore : (stu.postScore?.pattern ?? 0) + (stu.postScore?.numbers ?? 0);
+      return pre > 0 ? Math.round(((post - pre) / pre) * 100) : 0;
+    }).filter(impr => !isNaN(impr) && isFinite(impr) && impr >= 0);
+    // Bin improvements
+    return improvementBins.map(bin => ({
+      label: bin.label,
+      value: improvements.filter(impr => impr >= bin.min && impr <= bin.max).length,
+      color: bin.color,
+    }));
+  })();
 
   // Load teachers from Realtime Database on mount
   useEffect(() => {
@@ -215,96 +263,189 @@ export default function AdminDashboard() {
     return () => unsubscribe();
   }, []);
 
-  // Remove all references to mockStats and use derived values from teachers
+  // Add useEffect to fetch classes
+  useEffect(() => {
+    const classesRef = ref(db, 'Classes');
+    const unsubscribe = onValue(classesRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        setClasses(Object.values(data));
+      } else {
+        setClasses([]);
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Add useEffect to fetch students
+  useEffect(() => {
+    const studentsRef = ref(db, 'Students');
+    const unsubscribe = onValue(studentsRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        setStudents(Object.values(data));
+      } else {
+        setStudents([]);
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Replace the stats calculation with real aggregation:
+  const teacherStats = teachers.map(teacher => {
+    const teacherClasses = classes.filter(cls => cls.teacherId === teacher.teacherId);
+    const teacherClassIds = teacherClasses.map(cls => cls.id);
+    // Only students with a valid post test
+    const teacherStudents = students.filter(
+      stu => teacherClassIds.includes(stu.classId) &&
+        stu.postScore && (
+          (typeof stu.postScore === 'number' && !isNaN(stu.postScore))
+          || (typeof stu.postScore === 'object' && (typeof stu.postScore.pattern === 'number' || typeof stu.postScore.numbers === 'number'))
+        )
+    );
+    // Calculate average improvement for this teacher
+    let avgImprovement = 0;
+    let improvements: number[] = [];
+    if (teacherStudents.length > 0) {
+      improvements = teacherStudents.map(stu => {
+        const pre = typeof stu.preScore === 'number' ? stu.preScore : (stu.preScore?.pattern ?? 0) + (stu.preScore?.numbers ?? 0);
+        const post = typeof stu.postScore === 'number' ? stu.postScore : (stu.postScore?.pattern ?? 0) + (stu.postScore?.numbers ?? 0);
+        return pre > 0 ? ((post - pre) / pre) * 100 : 0;
+      });
+      avgImprovement = Math.round(improvements.reduce((a, b) => a + b, 0) / improvements.length);
+    }
+    // Log for each teacher
+    console.log(`Teacher: ${teacher.name}, Students with post test: ${teacherStudents.length}, Improvements: ${JSON.stringify(improvements)}, Avg: ${avgImprovement}`);
+    return {
+      ...teacher,
+      numClasses: teacherClasses.length,
+      numStudents: teacherStudents.length,
+      avgImprovement,
+      hasActiveStudents: teacherStudents.length > 0,
+    };
+  });
+
+  // For dashboard stats, only include teachers with at least one student with a valid post test
+  const activeTeacherStats = teacherStats.filter(t => t.hasActiveStudents);
+
+  // Deduplicate teacherStats by accountId for rendering
+  const uniqueTeacherStats = teacherStats.filter(
+    (teacher, index, self) =>
+      index === self.findIndex(t => t.accountId === teacher.accountId)
+  );
+
   const stats = {
     totalTeachers: teachers.length,
-    totalClasses: teachers.reduce((sum, t) => sum + (t.numClasses ?? 0), 0),
-    totalStudents: teachers.reduce((sum, t) => sum + (t.numStudents ?? 0), 0),
-    avgPreTest: 5.2, // placeholder, update if you have real data
-    avgPostTest: 7.1, // placeholder, update if you have real data
-    passRate: 82, // placeholder, update if you have real data
-    mostImprovedTeacher: teachers.reduce((a, b) => ((a.avgImprovement ?? 0) > (b.avgImprovement ?? 0) ? a : b), teachers[0] || {}),
-    activeTeachers: teachers.length - 1, // placeholder
-    inactiveTeachers: 1, // placeholder
+    totalClasses: classes.length,
+    totalStudents: students.length,
+    avgImprovement: (() => {
+      if (activeTeacherStats.length === 0) return 0;
+      const avg = Math.round(
+        activeTeacherStats.reduce((a, b) => a + (b.avgImprovement ?? 0), 0) / activeTeacherStats.length
+      );
+      // Log for dashboard
+      console.log(
+        'Dashboard avgImprovement computation:',
+        activeTeacherStats.map(t => ({
+          name: t.name,
+          avgImprovement: t.avgImprovement
+        })),
+        'Dashboard avg:', avg
+      );
+      return avg;
+    })(),
+    avgPreTest: (() => {
+      const preScores = students.map(stu => typeof stu.preScore === 'number' ? stu.preScore : (stu.preScore?.pattern ?? 0) + (stu.preScore?.numbers ?? 0));
+      return preScores.length > 0 ? (preScores.reduce((a, b) => a + b, 0) / preScores.length).toFixed(1) : 0;
+    })(),
+    avgPostTest: (() => {
+      const postScores = students.map(stu => typeof stu.postScore === 'number' ? stu.postScore : (stu.postScore?.pattern ?? 0) + (stu.postScore?.numbers ?? 0));
+      return postScores.length > 0 ? (postScores.reduce((a, b) => a + b, 0) / postScores.length).toFixed(1) : 0;
+    })(),
+    passRate: (() => {
+      // Example: pass if postScore >= 7
+      const passed = students.filter(stu => {
+        const post = typeof stu.postScore === 'number' ? stu.postScore : (stu.postScore?.pattern ?? 0) + (stu.postScore?.numbers ?? 0);
+        return post >= 7;
+      });
+      return students.length > 0 ? Math.round((passed.length / students.length) * 100) : 0;
+    })(),
+    mostImprovedTeacher: activeTeacherStats.reduce((a, b) => ((a.avgImprovement ?? 0) > (b.avgImprovement ?? 0) ? a : b), activeTeacherStats[0] || {}),
+    activeTeachers: activeTeacherStats.length,
+    inactiveTeachers: teacherStats.length - activeTeacherStats.length,
   };
 
   return (
-    <ImageBackground source={bgImage} style={{ flex: 1, backgroundColor: '#fff' }} imageStyle={{ opacity: 0.5, resizeMode: 'cover' }}>
-      <View style={{ ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(255,255,255,0.45)' }} pointerEvents="none" />
-      <SafeAreaView style={{ flex: 1 }}>
+    <ImageBackground source={bgImage} style={{ flex: 1, backgroundColor: '#fff' }} imageStyle={{ opacity: 0.7, resizeMode: 'cover' }}>
+      <View style={{ ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(255,255,255,0.92)' }} pointerEvents="none" />
+      <SafeAreaView style={{ flex: 1 }} edges={['left','right','bottom']}>
         <FlatList
           style={{ width: '100%' }}
+          showsVerticalScrollIndicator={false}
           ListHeaderComponent={
-            <View style={{ width: '100%', paddingHorizontal: 16 }}>
-              <BlurView intensity={60} tint="light" style={{ borderRadius: 28, marginBottom: 18, overflow: 'hidden' }}>
-                <View style={[styles.headerWrap, { backgroundColor: 'rgba(255,255,255,0.85)', borderRadius: 28, shadowColor: '#27ae60', shadowOpacity: 0.10, shadowRadius: 10, shadowOffset: { width: 0, height: 2 } }]}> 
+            <View style={{ width: '100%', paddingHorizontal: 12 }}>
+              {/* Enhanced Header */}
+              <BlurView intensity={80} tint="light" style={{ borderRadius: 0, marginBottom: 16, overflow: 'hidden' }}>
+                <View style={[styles.headerWrap, { backgroundColor: 'rgba(255,255,255,0.95)', borderRadius: 0, shadowColor: '#27ae60', shadowOpacity: 0.15, shadowRadius: 12, shadowOffset: { width: 0, height: 4 } }]}> 
                   <View style={styles.headerRow}>
                     <View>
-                      <Text style={{ fontSize: 23, fontWeight: '600', color: '#222', letterSpacing: 0.5 }}>Welcome,</Text>
-                      <Text style={{ fontSize: 22, fontWeight: '800', color: '#27ae60', marginTop: 2, letterSpacing: 0.5 }}>Admin</Text>
+                      <Text style={{ fontSize: 24, fontWeight: '600', color: '#1a1a1a', letterSpacing: 0.5, marginTop:16, marginBottom:-6 }}>Welcome back,</Text>
+                      <Text style={{ fontSize: 26, fontWeight: '800', color: '#27ae60', marginTop: 4, letterSpacing: 0.5 }}>Administrator</Text>
+                      <Text style={{ fontSize: 14, color: '#666', marginTop: 4, fontWeight: '500' }}>Manage your educational platform</Text>
                     </View>
-                    <TouchableOpacity style={styles.profileBtn}>
-                      <MaterialCommunityIcons name="account-cog" size={38} color="#27ae60" />
+                    <TouchableOpacity style={styles.profileBtn} onPress={() => setShowProfileMenu(true)}>
+                      <MaterialCommunityIcons name="account-cog" size={32} color="#27ae60" />
                     </TouchableOpacity>
                   </View>
                 </View>
               </BlurView>
-              {/* Stats Row */}
-              <View style={styles.statsRow}>
-                <LinearGradient colors={['#e0ffe6', '#c6f7e2']} style={styles.statsCard}>
-                  <AntDesign name="user" size={28} color="#27ae60" style={styles.statsIcon} />
-                  <Text style={styles.statsValue}>{stats.totalTeachers}</Text>
-                  <Text style={styles.statsLabel}>Teachers</Text>
-                </LinearGradient>
-                <LinearGradient colors={['#e0f7fa', '#b2ebf2']} style={styles.statsCard}>
-                  <MaterialCommunityIcons name="google-classroom" size={28} color="#0097a7" style={styles.statsIcon} />
-                  <Text style={styles.statsValue}>{stats.totalClasses}</Text>
-                  <Text style={styles.statsLabel}>Classes</Text>
-                </LinearGradient>
-                <LinearGradient colors={['#fffde4', '#ffe066']} style={styles.statsCard}>
-                  <MaterialCommunityIcons name="account-group" size={28} color="#ffb300" style={styles.statsIcon} />
-                  <Text style={styles.statsValue}>{stats.totalStudents}</Text>
-                  <Text style={styles.statsLabel}>Students</Text>
-                </LinearGradient>
-                <LinearGradient colors={['#e0ffe6', '#fff']} style={styles.statsCard}>
-                  <MaterialIcons name="trending-up" size={28} color="#27ae60" style={styles.statsIcon} />
-                  <Text style={[styles.statsValue, { color: '#27ae60' }]}>+{stats.avgImprovement}%</Text>
-                  <Text style={styles.statsLabel}>Avg. Improvement</Text>
-                </LinearGradient>
-              </View>
-              {/* More statistical cards */}
-              <View style={styles.moreStatsRow}>
-                <View style={styles.moreStatsCard}>
-                  <Text style={styles.moreStatsLabel}>Pass Rate</Text>
-                  <Text style={styles.moreStatsValue}>{stats.passRate}%</Text>
+              
+              {/* Modern 2x2 Stats Grid - Green Theme, White Card */}
+              <View style={styles.statsModernCard}>
+                <View style={styles.statsModernRow}>
+                  <View style={styles.statsModernItem}>
+                    <AntDesign name="user" size={32} color="#27ae60" style={styles.statsModernIcon} />
+                    <Text style={styles.statsModernValue}>{stats.totalTeachers}</Text>
+                    <Text style={styles.statsModernLabel}>Teachers</Text>
+                  </View>
+                  <View style={styles.statsModernItem}>
+                    <MaterialCommunityIcons name="google-classroom" size={32} color="#27ae60" style={styles.statsModernIcon} />
+                    <Text style={styles.statsModernValue}>{stats.totalClasses}</Text>
+                    <Text style={styles.statsModernLabel}>Classes</Text>
+                  </View>
                 </View>
-                <View style={styles.moreStatsCard}>
-                  <Text style={styles.moreStatsLabel}>Avg. Pre-test</Text>
-                  <Text style={styles.moreStatsValue}>{stats.avgPreTest}</Text>
-                </View>
-                <View style={styles.moreStatsCard}>
-                  <Text style={styles.moreStatsLabel}>Avg. Post-test</Text>
-                  <Text style={styles.moreStatsValue}>{stats.avgPostTest}</Text>
-                </View>
-                <View style={styles.moreStatsCard}>
-                  <Text style={styles.moreStatsLabel}>Active</Text>
-                  <Text style={styles.moreStatsValue}>{stats.activeTeachers}</Text>
-                </View>
-                <View style={styles.moreStatsCard}>
-                  <Text style={styles.moreStatsLabel}>Inactive</Text>
-                  <Text style={styles.moreStatsValue}>{stats.inactiveTeachers}</Text>
+                <View style={styles.statsModernRow}>
+                  <View style={styles.statsModernItem}>
+                    <MaterialCommunityIcons name="account-group" size={32} color="#27ae60" style={styles.statsModernIcon} />
+                    <Text style={styles.statsModernValue}>{stats.totalStudents}</Text>
+                    <Text style={styles.statsModernLabel}>Students</Text>
+                  </View>
+                  <View style={styles.statsModernItem}>
+                    <MaterialIcons name="trending-up" size={32} color="#27ae60" style={styles.statsModernIcon} />
+                    <Text style={styles.statsModernValue}>+{stats.avgImprovement}%</Text>
+                    <Text style={styles.statsModernLabel}>Avg. Impr.</Text>
+                  </View>
                 </View>
               </View>
-              <EffectivenessBarChart data={improvementDistribution} />
-              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop:2, marginBottom: 12 }}>
-                <Text style={styles.sectionTitle}>All Teachers</Text>
-                <TouchableOpacity onPress={() => setModalVisible(true)} style={{ padding: 6, borderRadius: 20 }}>
-                  <AntDesign name="adduser" size={24} color="#27ae60" />
+              
+              {/* Enhanced Chart Section */}
+              <View style={styles.chartContainer}>
+                <EffectivenessBarChart data={improvementDistribution} />
+              </View>
+              
+              {/* Enhanced Section Header */}
+              <View style={styles.sectionHeader}>
+                <View style={styles.sectionTitleContainer}>
+                  <Text style={styles.sectionTitle}>All Teachers</Text>
+                </View>
+                <TouchableOpacity onPress={() => setModalVisible(true)} style={styles.addButton}>
+                  <AntDesign name="adduser" size={20} color="#fff" />
+                  <Text style={styles.addButtonText}>Add Teacher</Text>
                 </TouchableOpacity>
               </View>
             </View>
           }
-          data={teachers}
+          data={uniqueTeacherStats}
           keyExtractor={(item, index) => item.accountId || item.teacherId || String(index)}
           numColumns={2}
           columnWrapperStyle={{ justifyContent: 'flex-start' }}
@@ -315,28 +456,60 @@ export default function AdminDashboard() {
               activeOpacity={0.85}
               style={styles.teacherGridCard}
             >
-              <View style={{ flex: 1, marginLeft: 0, minWidth: 0 }}>
-                <Text style={styles.teacherGridName} numberOfLines={1}>{item.name}</Text>
-                <Text style={styles.teacherGridSchool} numberOfLines={1}>{item.school}</Text>
-                <Text style={styles.teacherGridId}>ID: {item.teacherId}</Text>
-                <View style={styles.teacherGridStatsRow}>
-                  <View style={styles.teacherGridStat}><MaterialCommunityIcons name="account-group" size={18} color="#27ae60" /><Text style={styles.teacherGridStatNum}> {(item.numStudents ?? 0).toString().padStart(2,'0')}</Text></View>
-                  <View style={styles.teacherGridStat}><MaterialCommunityIcons name="google-classroom" size={18} color="#3a3a3a" /><Text style={styles.teacherGridStatNum}> {(item.numClasses ?? 0).toString().padStart(2,'0')}</Text></View>
-                  <View style={styles.teacherGridImprovementRow}>
-                    <MaterialIcons
-                      name={item.avgImprovement > 0 ? 'trending-up' : item.avgImprovement < 0 ? 'trending-down' : 'trending-flat'}
-                      size={16}
-                      color={item.avgImprovement > 0 ? '#27ae60' : item.avgImprovement < 0 ? '#ff5a5a' : '#ffe066'}
-                    />
-                    <Text
-                      style={[
-                        styles.teacherGridImprovementText,
-                        { color: item.avgImprovement > 0 ? '#27ae60' : item.avgImprovement < 0 ? '#ff5a5a' : '#ffe066', marginLeft: -3 },
-                      ]}
-                    >
-                      {(item.avgImprovement ?? 0) > 0 ? '+' : ''}{item.avgImprovement ?? 0}%
-                    </Text>
-                  </View>
+              <View style={styles.teacherCardHeader}>
+                <View style={styles.teacherAvatar}>
+                  <Text style={styles.teacherAvatarText}>{item.name.charAt(0).toUpperCase()}</Text>
+                </View>
+                <View style={styles.teacherCardInfo}>
+                  <Text style={styles.teacherGridName} numberOfLines={1}>{item.name}</Text>
+                  <Text style={styles.teacherGridSchool} numberOfLines={1}>{item.school}</Text>
+                  <Text style={styles.teacherGridId}>ID: {item.teacherId}</Text>
+                </View>
+              </View>
+              <View style={styles.teacherCardStats}>
+                <View style={styles.teacherStatItem}>
+                  <MaterialCommunityIcons name="account-group" size={16} color="#27ae60" />
+                  <Text style={styles.teacherStatValue}>{(item.numStudents).toString().padStart(1,'0')}</Text>
+                  <Text
+                    style={[styles.teacherStatLabel, { maxWidth: 90, textAlign: 'center' }]}
+                    numberOfLines={1}
+                    ellipsizeMode="tail"
+                  >
+                    Students
+                  </Text>
+                </View>
+                <View style={styles.teacherStatItem}>
+                  <MaterialCommunityIcons name="google-classroom" size={16} color="#27ae60" />
+                  <Text style={styles.teacherStatValue}>{(item.numClasses).toString().padStart(1,'0')}</Text>
+                  <Text
+                    style={[styles.teacherStatLabel, { maxWidth: 90, textAlign: 'center' }]}
+                    numberOfLines={1}
+                    ellipsizeMode="tail"
+                  >
+                    Classes
+                  </Text>
+                </View>
+                <View style={styles.teacherStatItem}>
+                  <MaterialIcons
+                    name={item.avgImprovement > 0 ? 'trending-up' : item.avgImprovement < 0 ? 'trending-down' : 'trending-flat'}
+                    size={16}
+                    color={item.avgImprovement > 0 ? '#27ae60' : item.avgImprovement < 0 ? '#ff5a5a' : '#ffe066'}
+                  />
+                  <Text
+                    style={[
+                      styles.teacherStatValue,
+                      { color: item.avgImprovement > 0 ? '#27ae60' : item.avgImprovement < 0 ? '#ff5a5a' : '#ffe066' },
+                    ]}
+                  >
+                    {(item.avgImprovement) > 0 ? '+' : ''}{item.avgImprovement}%
+                  </Text>
+                  <Text
+                    style={[styles.teacherStatLabel, { maxWidth: 90, textAlign: 'center' }]}
+                    numberOfLines={1}
+                    ellipsizeMode="tail"
+                  >
+                    Improvement
+                  </Text>
                 </View>
               </View>
             </TouchableOpacity>
@@ -346,30 +519,39 @@ export default function AdminDashboard() {
         <Modal visible={modalVisible} transparent animationType="fade" onRequestClose={() => setModalVisible(false)}>
           <View style={styles.modalOverlay}>
             <View style={styles.modalBox}>
-              <Text style={styles.modalTitle}>Register New Teacher</Text>
-              <View style={{ marginBottom: 10 }}>
-                <Text style={styles.modalLabel}>Full Name</Text>
-                <TextInput style={styles.modalInput} placeholder="Enter full name" value={newTeacher.name} onChangeText={v => setNewTeacher(t => ({ ...t, name: v }))} />
+              <View style={styles.modalHeader}>
+                <MaterialCommunityIcons name="account-plus" size={28} color="#27ae60" style={{ marginRight: 12 }} />
+                <Text style={styles.modalTitle}>Register New Teacher</Text>
               </View>
-              <View style={{ marginBottom: 10 }}>
-                <Text style={styles.modalLabel}>Email</Text>
-                <TextInput style={styles.modalInput} placeholder="Enter email" value={newTeacher.email} onChangeText={v => setNewTeacher(t => ({ ...t, email: v }))} keyboardType="email-address" />
-              </View>
-              <View style={{ marginBottom: 10 }}>
-                <Text style={styles.modalLabel}>Contact Number</Text>
-                <TextInput style={styles.modalInput} placeholder="Enter contact number" value={newTeacher.contact} onChangeText={v => setNewTeacher(t => ({ ...t, contact: v }))} keyboardType="phone-pad" />
-              </View>
-              <View style={{ marginBottom: 10 }}>
-                <Text style={styles.modalLabel}>School</Text>
-                <TextInput style={styles.modalInput} placeholder="Enter school" value={newTeacher.school} onChangeText={v => setNewTeacher(t => ({ ...t, school: v }))} />
-              </View>
-              <View style={{ marginBottom: 10 }}>
-                <Text style={styles.modalLabel}>Password</Text>
-                <TextInput style={styles.modalInput} placeholder="Enter password" value={newTeacher.password} onChangeText={v => setNewTeacher(t => ({ ...t, password: v }))} secureTextEntry />
-              </View>
+              <ScrollView style={styles.modalContent} contentContainerStyle={{ paddingBottom: 8 }} showsVerticalScrollIndicator={false}>
+                <View style={styles.inputGroup}>
+                  <Text style={styles.modalLabel}>Full Name</Text>
+                  <TextInput style={styles.modalInput} placeholder="Enter full name" value={newTeacher.name} onChangeText={v => setNewTeacher(t => ({ ...t, name: v }))} />
+                </View>
+                <View style={styles.inputGroup}>
+                  <Text style={styles.modalLabel}>Email</Text>
+                  <TextInput style={styles.modalInput} placeholder="Enter email" value={newTeacher.email} onChangeText={v => setNewTeacher(t => ({ ...t, email: v }))} keyboardType="email-address" />
+                </View>
+                <View style={styles.inputGroup}>
+                  <Text style={styles.modalLabel}>Contact Number</Text>
+                  <TextInput style={styles.modalInput} placeholder="Enter contact number" value={newTeacher.contact} onChangeText={v => setNewTeacher(t => ({ ...t, contact: v }))} keyboardType="phone-pad" />
+                </View>
+                <View style={styles.inputGroup}>
+                  <Text style={styles.modalLabel}>School</Text>
+                  <TextInput style={styles.modalInput} placeholder="Enter school" value={newTeacher.school} onChangeText={v => setNewTeacher(t => ({ ...t, school: v }))} />
+                </View>
+                <View style={styles.inputGroup}>
+                  <Text style={styles.modalLabel}>Password</Text>
+                  <TextInput style={styles.modalInput} placeholder="Enter password" value={newTeacher.password} onChangeText={v => setNewTeacher(t => ({ ...t, password: v }))} secureTextEntry />
+                </View>
+              </ScrollView>
               <View style={styles.modalBtnRow}>
-                <TouchableOpacity style={styles.modalBtn} onPress={() => setModalVisible(false)}><Text style={styles.modalBtnText}>Cancel</Text></TouchableOpacity>
-                <TouchableOpacity style={[styles.modalBtn, styles.modalBtnPrimary]} onPress={handleRegisterTeacher}><Text style={[styles.modalBtnText, styles.modalBtnTextPrimary]}>Register</Text></TouchableOpacity>
+                <TouchableOpacity style={styles.modalBtn} onPress={() => setModalVisible(false)}>
+                  <Text style={styles.modalBtnText}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.modalBtn, styles.modalBtnPrimary]} onPress={handleRegisterTeacher}>
+                  <Text style={[styles.modalBtnText, styles.modalBtnTextPrimary]}>Register</Text>
+                </TouchableOpacity>
               </View>
             </View>
           </View>
@@ -378,60 +560,69 @@ export default function AdminDashboard() {
         <Modal visible={!!selectedTeacher} transparent animationType="fade" onRequestClose={() => setSelectedTeacher(null)}>
           <View style={styles.modalOverlay}>
             <View style={[styles.modalBox, { padding: 0, overflow: 'hidden', shadowOpacity: 0.18, shadowRadius: 24, maxWidth: 370, width: '92%' }]}> 
-              {/* Header Bar */}
-              <View style={{ backgroundColor: '#27ae60', paddingVertical: 18, alignItems: 'center', borderTopLeftRadius: 22, borderTopRightRadius: 22, flexDirection: 'row', justifyContent: 'center', position: 'relative' }}>
-                <MaterialCommunityIcons name="account-tie" size={32} color="#fff" style={{ marginRight: 10 }} />
-                <Text style={{ color: '#fff', fontSize: 22, fontWeight: 'bold', letterSpacing: 0.5 }}>Teacher Details</Text>
-              </View>
-              <ScrollView style={{ maxHeight: 480, width: '100%' }} contentContainerStyle={{ padding: 20, backgroundColor: 'rgba(255,255,255,0.98)', borderBottomLeftRadius: 22, borderBottomRightRadius: 22 }}>
+              {/* Enhanced Header Bar */}
+              <LinearGradient colors={['#27ae60', '#2ecc71']} style={{ paddingVertical: 20, alignItems: 'center', borderTopLeftRadius: 22, borderTopRightRadius: 22, flexDirection: 'row', justifyContent: 'center', position: 'relative' }}>
+                <MaterialCommunityIcons name="account-tie" size={28} color="#fff" style={{ marginRight: 10 }} />
+                <Text style={{ color: '#fff', fontSize: 20, fontWeight: 'bold', letterSpacing: 0.5 }}>Teacher Details</Text>
+              </LinearGradient>
+              <ScrollView style={{ maxHeight: 480, width: '100%' }} contentContainerStyle={{ padding: 24, backgroundColor: 'rgba(255,255,255,0.98)', borderBottomLeftRadius: 22, borderBottomRightRadius: 22 }} showsVerticalScrollIndicator={false}>
               {editTeacher && (
                 <>
-                    <View style={{ marginBottom: 10 }}>
-                      <Text style={{ color: '#888', fontSize: 13, fontWeight: '600', marginBottom: 2 }}>Teacher ID</Text>
-                      <View style={{ backgroundColor: '#f3f3f3', borderRadius: 8, padding: 8, marginBottom: 4 }}>
-                        <Text style={{ color: '#bbb', fontWeight: 'bold', fontSize: 15 }}>{editTeacher.teacherId}</Text>
+                    <View style={styles.teacherIdSection}>
+                      <Text style={styles.teacherIdLabel}>Teacher ID</Text>
+                      <View style={styles.teacherIdContainer}>
+                        <Text style={styles.teacherIdText}>{editTeacher.teacherId}</Text>
                       </View>
-                      <Text style={{ color: '#888', fontSize: 13, fontWeight: '600', marginBottom: 2 }}>Account ID</Text>
-                      <View style={{ backgroundColor: '#f3f3f3', borderRadius: 8, padding: 8, marginBottom: 8 }}>
-                        <Text style={{ color: '#bbb', fontSize: 13 }}>{editTeacher.accountId}</Text>
+                      <Text style={styles.teacherIdLabel}>Account ID</Text>
+                      <View style={styles.teacherIdContainer}>
+                        <Text style={styles.accountIdText}>{editTeacher.accountId}</Text>
                       </View>
                     </View>
-                    <View style={{ borderBottomWidth: 1, borderColor: '#e6e6e6', marginBottom: 12 }} />
-                    <View style={{ marginBottom: 10 }}>
+                    <View style={styles.divider} />
+                    <View style={styles.inputGroup}>
                       <Text style={styles.modalLabel}>Full Name</Text>
-                      <TextInput style={[styles.modalInput, { backgroundColor: '#f9f9f9', borderWidth: 1, borderColor: '#e0f7e2' }]} editable={editMode} value={editTeacher.name} onChangeText={v => setEditTeacher(t => t ? { ...t, name: v } : null)} placeholder="Full Name" />
+                      <TextInput style={[styles.modalInput, editMode && styles.modalInputEditable]} editable={editMode} value={editTeacher.name} onChangeText={v => setEditTeacher(t => t ? { ...t, name: v } : null)} placeholder="Full Name" />
                     </View>
-                    <View style={{ marginBottom: 10 }}>
+                    <View style={styles.inputGroup}>
                       <Text style={styles.modalLabel}>Email</Text>
-                      <TextInput style={[styles.modalInput, { backgroundColor: '#f9f9f9', borderWidth: 1, borderColor: '#e0f7e2' }]} editable={editMode} value={editTeacher.email} onChangeText={v => setEditTeacher(t => t ? { ...t, email: v } : null)} placeholder="Email" />
+                      <TextInput style={[styles.modalInput, editMode && styles.modalInputEditable]} editable={editMode} value={editTeacher.email} onChangeText={v => setEditTeacher(t => t ? { ...t, email: v } : null)} placeholder="Email" />
                     </View>
-                    <View style={{ marginBottom: 10 }}>
+                    <View style={styles.inputGroup}>
                       <Text style={styles.modalLabel}>Contact Number</Text>
-                      <TextInput style={[styles.modalInput, { backgroundColor: '#f9f9f9', borderWidth: 1, borderColor: '#e0f7e2' }]} editable={editMode} value={editTeacher.contact} onChangeText={v => setEditTeacher(t => t ? { ...t, contact: v } : null)} placeholder="Contact Number" />
+                      <TextInput style={[styles.modalInput, editMode && styles.modalInputEditable]} editable={editMode} value={editTeacher.contact} onChangeText={v => setEditTeacher(t => t ? { ...t, contact: v } : null)} placeholder="Contact Number" />
                     </View>
-                    <View style={{ marginBottom: 18 }}>
+                    <View style={styles.inputGroup}>
                       <Text style={styles.modalLabel}>School</Text>
-                      <TextInput style={[styles.modalInput, { backgroundColor: '#f9f9f9', borderWidth: 1, borderColor: '#e0f7e2' }]} editable={editMode} value={editTeacher.school} onChangeText={v => setEditTeacher(t => t ? { ...t, school: v } : null)} placeholder="School" />
+                      <TextInput style={[styles.modalInput, editMode && styles.modalInputEditable]} editable={editMode} value={editTeacher.school} onChangeText={v => setEditTeacher(t => t ? { ...t, school: v } : null)} placeholder="School" />
                     </View>
-                    <View style={{ borderBottomWidth: 1, borderColor: '#e6e6e6', marginBottom: 12 }} />
-                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 10 }}>
+                    <View style={styles.divider} />
+                    <View style={styles.teacherStatsGrid}>
                       {[
-                        { label: 'Classes', value: editTeacher.numClasses ?? 0, color: '#27ae60' },
-                        { label: 'Students', value: editTeacher.numStudents ?? 0, color: '#27ae60' },
-                        { label: 'Avg. Improvement', value: (editTeacher.avgImprovement ?? 0) > 0 ? '+' : '' + (editTeacher.avgImprovement ?? 0) + '%', color: (editTeacher.avgImprovement ?? 0) > 0 ? '#27ae60' : (editTeacher.avgImprovement ?? 0) < 0 ? '#ff5a5a' : '#ffe066' }
+                        { label: 'Classes', value: editTeacher.numClasses ?? 0, icon: 'google-classroom', color: '#27ae60' },
+                        { label: 'Students', value: editTeacher.numStudents ?? 0, icon: 'account-group', color: '#27ae60' },
+                        { label: 'Avg. Improvement', value: (editTeacher.avgImprovement ?? 0) > 0
+                          ? `+${editTeacher.avgImprovement ?? 0}%`
+                          : (editTeacher.avgImprovement ?? 0) < 0
+                            ? `${editTeacher.avgImprovement ?? 0}%`
+                            : '0%', icon: 'trending-up', color: (editTeacher.avgImprovement ?? 0) > 0 ? '#27ae60' : (editTeacher.avgImprovement ?? 0) < 0 ? '#ff5a5a' : '#ffe066' }
                       ].map((stat, idx) => (
-                        <View key={stat.label + '-' + idx} style={{ alignItems: 'center', flex: 1 }}>
-                          <Text style={{ color: '#888', fontSize: 13, fontWeight: '600' }}>{stat.label}</Text>
-                          <Text style={{ color: stat.color, fontWeight: 'bold', fontSize: 16 }}>{stat.value}</Text>
+                        <View key={stat.label + '-' + idx} style={styles.teacherStatCard}>
+                          <MaterialCommunityIcons name={stat.icon as any} size={20} color={stat.color} style={{ marginBottom: 4 }} />
+                          <Text style={[styles.teacherStatValue, { color: stat.color }]}>{stat.value}</Text>
+                          <Text style={[styles.teacherStatLabel, { maxWidth: 90, textAlign: 'center' }]} numberOfLines={1} ellipsizeMode="tail">{stat.label}</Text>
                         </View>
                       ))}
                     </View>
-                    <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 10, marginTop: 10 }}>
-                      <TouchableOpacity style={[styles.modalBtn, { backgroundColor: '#e6e6e6', flex: 1 }]} onPress={() => { setSelectedTeacher(null); setEditMode(false); }}><Text style={[styles.modalBtnText, { color: '#444' }]}>Close</Text></TouchableOpacity>
-                    {!editMode ? (
-                        <TouchableOpacity style={[styles.modalBtn, styles.modalBtnPrimary, { flex: 1 }]} onPress={() => setEditMode(true)}><Text style={[styles.modalBtnText, styles.modalBtnTextPrimary]}>Edit</Text></TouchableOpacity>
+                    <View style={styles.modalActionButtons}>
+                      <TouchableOpacity style={[styles.modalBtn, styles.modalBtnSecondary]} onPress={() => { setSelectedTeacher(null); setEditMode(false); }}>
+                        <Text style={[styles.modalBtnText, styles.modalBtnTextSecondary]}>Close</Text>
+                      </TouchableOpacity>
+                      {!editMode ? (
+                        <TouchableOpacity style={[styles.modalBtn, styles.modalBtnPrimary]} onPress={() => setEditMode(true)}>
+                          <Text style={[styles.modalBtnText, styles.modalBtnTextPrimary]}>Edit</Text>
+                        </TouchableOpacity>
                       ) : (
-                        <TouchableOpacity style={[styles.modalBtn, styles.modalBtnPrimary, { flex: 1 }]} onPress={async () => {
+                        <TouchableOpacity style={[styles.modalBtn, styles.modalBtnPrimary]} onPress={async () => {
                           try {
                             const current = teachers.find(t => t.accountId === editTeacher.accountId);
                             if (!current) throw new Error('Teacher not found');
@@ -444,20 +635,44 @@ export default function AdminDashboard() {
                             };
                             await set(ref(db, `Teachers/${editTeacher.accountId}`), updated);
                             setTeachers(prev => prev.map(t => t.accountId === editTeacher.accountId ? updated : t));
-                        setSelectedTeacher(null);
-                        setEditMode(false);
+                            setSelectedTeacher(null);
+                            setEditMode(false);
                           } catch (error) {
                             Alert.alert('Error', 'Failed to save changes.');
                           }
-                      }}><Text style={[styles.modalBtnText, styles.modalBtnTextPrimary]}>Save</Text></TouchableOpacity>
-                    )}
-                      <TouchableOpacity style={[styles.modalBtn, { backgroundColor: '#ff5a5a', flex: 1 }]} onPress={() => handleDeleteTeacher(editTeacher)}>
-                        <Text style={[styles.modalBtnText, { color: '#fff' }]}>Delete</Text>
+                        }}>
+                          <Text style={[styles.modalBtnText, styles.modalBtnTextPrimary]}>Save</Text>
+                        </TouchableOpacity>
+                      )}
+                      <TouchableOpacity style={[styles.modalBtn, styles.modalBtnDanger]} onPress={() => handleDeleteTeacher(editTeacher)}>
+                        <Text style={[styles.modalBtnText, styles.modalBtnTextDanger]}>Delete</Text>
                       </TouchableOpacity>
-                  </View>
+                    </View>
                 </>
               )}
               </ScrollView>
+            </View>
+          </View>
+        </Modal>
+        {/* Profile Menu Modal */}
+        <Modal visible={showProfileMenu} transparent animationType="fade" onRequestClose={() => setShowProfileMenu(false)}>
+          <View style={{ flex: 1, justifyContent: 'flex-start', alignItems: 'flex-end', paddingTop: 180, paddingRight: 50, backgroundColor: 'rgba(0,0,0,0.08)' }}>
+            <View style={{ backgroundColor: '#fff', borderRadius: 14, padding: 8, shadowColor: '#27ae60', shadowOpacity: 0.15, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 4, minWidth: 105 }}>
+              <TouchableOpacity
+                style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 8 }}
+                onPress={async () => {
+                  setShowProfileMenu(false);
+                  try {
+                    await auth.signOut();
+                    router.replace('/RoleSelection');
+                  } catch (e) {
+                    Alert.alert('Logout Failed', 'Could not log out.');
+                  }
+                }}
+              >
+                <MaterialCommunityIcons name="logout" size={20} color="#27ae60" style={{ marginRight: 8 }} />
+                <Text style={{ color: '#27ae60', fontWeight: 'bold', fontSize: 16 }}>Logout</Text>
+              </TouchableOpacity>
             </View>
           </View>
         </Modal>
@@ -476,7 +691,7 @@ const styles = StyleSheet.create({
   },
   headerWrap: {
     width: '100%',
-    paddingTop: 32,
+    paddingTop: 8,
     paddingBottom: 20,
     backgroundColor: 'rgba(255,255,255,0.96)',
     borderBottomLeftRadius: 28,
@@ -547,6 +762,20 @@ const styles = StyleSheet.create({
   statsIcon: {
     marginBottom: 4,
   },
+  statsIconContainer: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255,255,255,0.8)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 8,
+    shadowColor: '#000',
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 2,
+  },
   statsValue: {
     fontSize: 20,
     fontWeight: 'bold',
@@ -585,25 +814,66 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: 'bold',
     color: '#27ae60',
-    marginTop: 24,
+    marginTop: 11,
     marginBottom: 12,
     alignSelf: 'flex-start',
   },
   teacherGridCard: {
     width: '47.5%',
     backgroundColor: '#fff',
-    borderRadius: 18,
+    borderRadius: 20,
     padding: 16,
     marginRight: 8,
     marginLeft: 4,
     marginBottom: 16,
+    elevation: 3,
+    shadowColor: '#27ae60',
+    shadowOpacity: 0.12,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 3 },
+  },
+  teacherCardHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    elevation: 2,
-    shadowColor: '#27ae60',
-    shadowOpacity: 0.10,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 2 },
+    marginBottom: 12,
+  },
+  teacherAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#27ae60',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  teacherAvatarText: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: 'bold',
+  },
+  teacherCardInfo: {
+    flex: 1,
+  },
+  teacherCardStats: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  teacherStatItem: {
+    alignItems: 'center',
+    flex: 1,
+  },
+  teacherStatValue: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#27ae60',
+    marginTop: 2,
+  },
+  teacherStatLabel: {
+    fontSize: 10,
+    color: '#666',
+    fontWeight: '500',
+    marginTop: 2,
   },
   teacherGridName: {
     fontWeight: 'bold',
@@ -619,7 +889,7 @@ const styles = StyleSheet.create({
   },
   teacherGridId: {
     color: '#888',
-    fontSize: 12,
+    fontSize: 10,
     fontWeight: '600',
     marginBottom: 2,
   },
@@ -675,40 +945,81 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: '800',
     color: '#27ae60',
-    marginBottom: 16,
+    marginBottom: 0,
     textAlign: 'center',
   },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 20,
+    paddingBottom: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#e0e0e0',
+  },
+  modalContent: {
+    marginBottom: 20,
+  },
+  inputGroup: {
+    marginBottom: 16,
+  },
   modalInput: {
-    backgroundColor: '#f3f3f3',
+    backgroundColor: '#f8f9fa',
     borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
     fontSize: 15,
-    marginBottom: 14,
     color: '#222',
+    borderWidth: 1,
+    borderColor: '#e9ecef',
+    marginTop: 4,
   },
   modalBtnRow: {
     flexDirection: 'row',
-    justifyContent: 'flex-end',
+    justifyContent: 'space-between',
     gap: 12,
     marginTop: 6,
   },
   modalBtn: {
-    backgroundColor: '#e6e6e6',
+    backgroundColor: '#f8f9fa',
     borderRadius: 12,
-    paddingVertical: 8,
-    paddingHorizontal: 22,
-    marginLeft: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+    borderWidth: 1,
+    borderColor: '#e9ecef',
+    flex: 1,
+    alignItems: 'center',
   },
   modalBtnPrimary: {
     backgroundColor: '#27ae60',
+    borderColor: '#27ae60',
+  },
+  modalBtnSecondary: {
+    backgroundColor: '#f8f9fa',
+    borderColor: '#e9ecef',
+  },
+  modalBtnDanger: {
+    backgroundColor: '#ff5a5a',
+    borderColor: '#ff5a5a',
+  },
+  modalActionButtons: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginTop: 16,
   },
   modalBtnText: {
     color: '#444',
     fontWeight: 'bold',
-    fontSize: 15,
+    fontSize: 14,
   },
   modalBtnTextPrimary: {
+    color: '#fff',
+  },
+  modalBtnTextSecondary: {
+    color: '#666',
+  },
+  modalBtnTextDanger: {
     color: '#fff',
   },
   moreStatsRow: {
@@ -833,4 +1144,143 @@ const styles = StyleSheet.create({
     marginBottom: 4,
     marginLeft: 2,
   },
+  teacherIdSection: {
+    marginBottom: 16,
+  },
+  teacherIdLabel: {
+    color: '#666',
+    fontSize: 13,
+    fontWeight: '600',
+    marginBottom: 4,
+  },
+  teacherIdContainer: {
+    backgroundColor: '#f8f9fa',
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: '#e9ecef',
+  },
+  teacherIdText: {
+    color: '#27ae60',
+    fontWeight: 'bold',
+    fontSize: 15,
+  },
+  accountIdText: {
+    color: '#666',
+    fontSize: 13,
+    fontFamily: 'monospace',
+  },
+  divider: {
+    borderBottomWidth: 1,
+    borderColor: '#e6e6e6',
+    marginBottom: 16,
+  },
+  modalInputEditable: {
+    backgroundColor: '#f0f8f0',
+    borderColor: '#27ae60',
+  },
+  teacherStatsGrid: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+  },
+  teacherStatCard: {
+    alignItems: 'center',
+    flex: 1,
+    backgroundColor: '#f8f9fa',
+    borderRadius: 12,
+    padding: 12,
+    marginHorizontal: 4,
+  },
+  chartContainer: {
+    backgroundColor: 'rgba(255,255,255,0.9)',
+    borderRadius: 16,
+    padding: 8,
+    marginTop: 18,
+    marginVertical: 8,
+    shadowColor: '#27ae60',
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 3,
+  },
+  chartHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  chartTitle: {
+    fontWeight: 'bold',
+    marginTop: 16,
+    marginBottom: -12,
+    fontSize: 20,
+    color: '#27ae60',
+  },
+  barContainer: {
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    height: 100,
+  },
+  bar: {
+    borderRadius: 8,
+    marginBottom: 8,
+  },
+  barLabel: {
+    color: '#222',
+    fontWeight: '600',
+    textAlign: 'center',
+    marginBottom: 2,
+    fontSize: 12,
+  },
+  barValue: {
+    color: '#888',
+    textAlign: 'center',
+    fontWeight: '500',
+  },
+  chartDescription: {
+    fontSize: 11,
+    color: '#666',
+    marginTop: 8,
+    marginBottom: 8,
+    textAlign: 'center',
+    fontStyle: 'italic',
+  },
+  sectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 24,
+    marginBottom: 16,
+    paddingHorizontal: 4,
+  },
+  sectionTitleContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  addButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#27ae60',
+    borderRadius: 20,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    shadowColor: '#27ae60',
+    shadowOpacity: 0.3,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 4,
+  },
+  addButtonText: {
+    color: '#fff',
+    fontWeight: '600',
+    fontSize: 14,
+    marginLeft: 6,
+  },
+  statsModernCard: { backgroundColor: '#fff', marginTop: -22, borderRadius: 20, padding: 18, marginVertical: 0, shadowColor: '#27ae60', shadowOpacity: 0.08, shadowRadius: 12, shadowOffset: { width: 0, height: 4 }, elevation: 3, },
+  statsModernRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8, },
+  statsModernItem: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 10, },
+  statsModernIcon: { marginBottom: 2, },
+  statsModernValue: { fontSize: 22, fontWeight: 'bold', color: '#27ae60', marginBottom: 2, },
+  statsModernLabel: { fontSize: 13, color: '#666', fontWeight: '600', },
 }); 

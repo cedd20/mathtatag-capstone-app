@@ -71,6 +71,7 @@ export default function TeacherDashboard() {
   const [postPattern, setPostPattern] = useState('0');
   const [postNumbers, setPostNumbers] = useState('0');
   const [announceTitle, setAnnounceTitle] = useState('');
+  const [parentAuthCode, setParentAuthCode] = useState<string | null>(null);
 
   // Safety net: Stop any background music when this screen gains focus
   useFocusEffect(
@@ -247,6 +248,19 @@ export default function TeacherDashboard() {
     if (type === 'studentInfo') {
       if (extra?.student) {
         setSelectedStudent(extra.student);
+        // Fetch parent auth code
+        setParentAuthCode(null); // reset first
+        if (extra.student.parentId) {
+          const parentRef = ref(db, `Parents/${extra.student.parentId}`);
+          get(parentRef).then(snap => {
+            if (snap.exists()) {
+              const parentData = snap.val();
+              setParentAuthCode(parentData.authCode || null);
+            } else {
+              setParentAuthCode(null);
+            }
+          }).catch(() => setParentAuthCode(null));
+        }
       }
     }
     setModalVisible(true);
@@ -576,6 +590,47 @@ export default function TeacherDashboard() {
     );
   }
 
+  // Helper: Compute performance distribution for pre/post test
+  function getPerformanceDistribution(students: Student[] = [], type: 'pre' | 'post') {
+    const categories = [
+      { label: 'Intervention', color: '#ff5a5a' },
+      { label: 'Consolidation', color: '#ffb37b' },
+      { label: 'Enhancement', color: '#ffe066' },
+      { label: 'Proficient', color: '#7ed957' },
+      { label: 'Highly Proficient', color: '#27ae60' },
+    ];
+    // Only count students with a valid score
+    const validScores = students.map(student => {
+      const scoreObj = type === 'pre' ? student.preScore : student.postScore;
+      if (!scoreObj) return null;
+      const score = (scoreObj.pattern ?? 0) + (scoreObj.numbers ?? 0);
+      if (typeof score !== 'number' || score < 0) return null;
+      return score;
+    }).filter(score => typeof score === 'number');
+    if (validScores.length < 2) {
+      // Not enough data: all gray
+      return categories.map(cat => ({ ...cat, color: '#bbb', percent: 0 }));
+    }
+    const counts = [0, 0, 0, 0, 0];
+    validScores.forEach(score => {
+      const percent = (score! / 20) * 100;
+      if (percent < 25) counts[0]++;
+      else if (percent < 50) counts[1]++;
+      else if (percent < 75) counts[2]++;
+      else if (percent < 85) counts[3]++;
+      else counts[4]++;
+    });
+    const sum = counts.reduce((a, b) => a + b, 0);
+    if (sum < 2) {
+      // Not enough valid scores
+      return categories.map(cat => ({ ...cat, color: '#bbb', percent: 0 }));
+    }
+    return categories.map((cat, i) => ({
+      ...cat,
+      percent: Math.round((counts[i] / sum) * 100),
+    }));
+  }
+
   // Responsive pie chart with legend always side by side
   function AnalyticsPieChartWithLegend({ data, reverse = false, title = 'Pretest Performance' }: { data: { label: string; color: string; percent: number }[], reverse?: boolean, title?: string }) {
     const windowWidth = Dimensions.get('window').width;
@@ -815,9 +870,9 @@ export default function TeacherDashboard() {
             </View>
         </View>
           <View style={{ marginTop: isSmall ? 8 : 16 }}>
-            <AnalyticsPieChartWithLegend data={cls.learnersPerformance} title="Pretest Performance" />
+            <AnalyticsPieChartWithLegend data={getPerformanceDistribution(cls.students || [], 'pre')} title="Pretest Performance" />
             <View style={{ height: 10 }} />
-            <AnalyticsPieChartWithLegend data={cls.learnersPerformance} reverse title="Posttest Performance" />
+            <AnalyticsPieChartWithLegend data={getPerformanceDistribution(cls.students || [], 'post')} reverse title="Posttest Performance" />
             {/* Class averages below posttest chart */}
             <View style={styles.compactCardRow}>
               {/* Avg. Improvement */}
@@ -1502,7 +1557,7 @@ export default function TeacherDashboard() {
             <Text style={styles.modalTitle}>Student Information</Text>
             <Text style={styles.modalStat}>Student: <Text style={styles.modalStatNum}>{selectedStudent?.nickname}</Text></Text>
             <Text style={styles.modalStat}>Number: <Text style={styles.modalStatNum}>{selectedStudent?.studentNumber}</Text></Text>
-            <Text style={styles.modalStat}>Category: <Text style={styles.modalStatNum}>{selectedStudent?.category}</Text></Text>
+            <Text style={styles.modalStat}>Parent Auth Code: <Text style={styles.modalStatNum}>{parentAuthCode ?? 'Loading...'}</Text></Text>
             <Text style={styles.modalStat}>Pre-test: <Text style={styles.modalStatNum}>{selectedStudent?.preScore ? String((selectedStudent.preScore.pattern ?? 0) + (selectedStudent.preScore.numbers ?? 0)) : 'N/A'}/20</Text> (Pattern: {String(selectedStudent?.preScore?.pattern ?? 0)}, Numbers: {String(selectedStudent?.preScore?.numbers ?? 0)})</Text>
             <Text style={styles.modalStat}>Post-test: <Text style={styles.modalStatNum}>{selectedStudent?.postScore ? String((selectedStudent.postScore.pattern ?? 0) + (selectedStudent.postScore.numbers ?? 0)) : 'N/A'}/20</Text> (Pattern: {String(selectedStudent?.postScore?.pattern ?? 0)}, Numbers: {String(selectedStudent?.postScore?.numbers ?? 0)})</Text>
             <Pressable style={[styles.modalBtn, { alignSelf: 'center', marginTop: 10 }]} onPress={closeModal}><Text style={styles.modalBtnText}>Close</Text></Pressable>
@@ -1546,20 +1601,6 @@ export default function TeacherDashboard() {
                 </View>
               </View>
               <View style={dashboardCardStyle}>
-                {/* Debug info */}
-                {__DEV__ && (
-                  <View style={{ backgroundColor: '#f0f0f0', padding: 8, borderRadius: 8, marginBottom: 10 }}>
-                    <Text style={{ fontSize: 12, color: '#666' }}>
-                      Debug: Teacher ID: {currentTeacher?.teacherId || 'None'}
-                    </Text>
-                    <Text style={{ fontSize: 12, color: '#666' }}>
-                      Classes loaded: {classes.length}
-                    </Text>
-                    <Text style={{ fontSize: 12, color: '#666' }}>
-                      Total students: {totalStudents}
-                    </Text>
-                  </View>
-                )}
                 {/* Title and Add Class in a single row */}
                 <View style={styles.dashboardHeaderRow}>
                   <Text style={styles.dashboardTitle}>Classrooms</Text>
@@ -1568,7 +1609,6 @@ export default function TeacherDashboard() {
                   </TouchableOpacity>
               </View>
                 <View style={{ height: 8 }} />
-                <AnalyticsCards />
                 {classes.map(cls => (
                   <React.Fragment key={cls.id}>
                     {renderClassPanel(cls)}

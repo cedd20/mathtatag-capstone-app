@@ -4,7 +4,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { Audio } from 'expo-av';
 import { useRouter } from 'expo-router';
 import React, { useEffect, useRef, useState } from 'react';
-import { Alert, Animated, Dimensions, Image, Modal, Pressable, ScrollView, StyleSheet, Switch, Text, TouchableOpacity, View } from 'react-native';
+import { Animated, Dimensions, Image, Modal, Pressable, ScrollView, StyleSheet, Switch, Text, TouchableOpacity, View } from 'react-native';
 
 
 const bgWelcome = require('../assets/images/bgWelcome.png');
@@ -19,6 +19,9 @@ const map2 = require('../assets/images/map2.png');
 const map3 = require('../assets/images/map3.png');
 const map4 = require('../assets/images/map4.png');
 const bgMusic = require('../assets/bgmusic/Grow a Garden - Standard Weather Music (Roblox).mp3');
+const deck = require('../assets/images/deck.png');
+const arrowL = require('../assets/images/arrowL.png');
+const arrowR = require('../assets/images/arrowR.png');
 
 const { width, height } = Dimensions.get('window');
 
@@ -132,9 +135,15 @@ export default function Homepage() {
     }
   };
 
-  // Play button handler (if needed)
+  // Play button handler (now depends on currentMapIdx)
   const handlePlay = async () => {
-    router.push('/Map1');
+    if (currentMapIdx === 0) {
+      router.push('/Map1');
+    } else {
+      alert(isEnglish 
+        ? 'Sorry this map is not Available yet. The map is under Maintenance!'
+        : 'Paumanhin, ang mapang ito ay hindi pa available. Ang mapa ay kasalukuyang nasa ilalim ng maintenance!');
+    }
   };
 
   useEffect(() => {
@@ -144,27 +153,27 @@ export default function Homepage() {
       useNativeDriver: true,
     }).start();
 
-    // Pulse animation for play button
-    Animated.loop(
-      Animated.sequence([
-        Animated.timing(playScale, { toValue: 1.12, duration: 1200, useNativeDriver: true }),
-        Animated.timing(playScale, { toValue: 1, duration: 1200, useNativeDriver: true }),
-      ])
-    ).start();
-
-    // Heartbeat animation for logo
+    // Heartbeat animation for play button
     Animated.loop(
       Animated.sequence([
         // First beat (stronger)
-        Animated.timing(logoBeat, { toValue: 1.15, duration: 200, useNativeDriver: true }),
-        Animated.timing(logoBeat, { toValue: 1, duration: 200, useNativeDriver: true }),
+        Animated.timing(playScale, { toValue: 1.15, duration: 200, useNativeDriver: true }),
+        Animated.timing(playScale, { toValue: 1, duration: 200, useNativeDriver: true }),
         // Small pause
         Animated.delay(100),
         // Second beat (weaker)
-        Animated.timing(logoBeat, { toValue: 1.08, duration: 200, useNativeDriver: true }),
-        Animated.timing(logoBeat, { toValue: 1, duration: 200, useNativeDriver: true }),
+        Animated.timing(playScale, { toValue: 1.08, duration: 200, useNativeDriver: true }),
+        Animated.timing(playScale, { toValue: 1, duration: 200, useNativeDriver: true }),
         // Rest period
         Animated.delay(800),
+      ])
+    ).start();
+
+    // Pulse animation for logo (classic smooth in-and-out)
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(logoBeat, { toValue: 1.12, duration: 900, useNativeDriver: true }),
+        Animated.timing(logoBeat, { toValue: 1, duration: 900, useNativeDriver: true }),
       ])
     ).start();
 
@@ -235,6 +244,9 @@ export default function Homepage() {
       ? `Welcome to Mathtatag! By using this app, you agree to the following:\n\n1. Educational Use: This app is designed for students, parents, and teachers to support math learning and progress tracking.\n2. Data Privacy: Your personal information and progress data are stored securely and used only for educational purposes within the app.\n3. Parental Consent: Parents must supervise and consent to their child's use of the app.\n4. No Cheating: Users agree not to misuse the app or falsify test results.\n5. Content Ownership: All images, music, and content are property of Mathtatag or their respective owners.\n6. Updates: The app may update features or terms at any time.\n7. Support: For questions or issues, contact your teacher or app support.\n\nBy continuing to use Mathtatag, you accept these terms.`
       : `Maligayang pagdating sa Mathtatag! Sa paggamit ng app na ito, sumasang-ayon ka sa mga sumusunod:\n\n1. Para sa Edukasyon: Ang app na ito ay para sa mga mag-aaral, magulang, at guro upang suportahan ang pagkatuto sa matematika at pagsubaybay ng progreso.\n2. Privacy ng Data: Ang iyong impormasyon at datos ng progreso ay ligtas at ginagamit lamang para sa edukasyonal na layunin sa app.\n3. Pahintulot ng Magulang: Kailangang may gabay at pahintulot ng magulang ang paggamit ng app ng bata.\n4. Iwasan ang Pandaraya: Sumasang-ayon ang mga gumagamit na hindi gagamitin ang app sa maling paraan o magpepeke ng resulta.\n5. Karapatan sa Nilalaman: Lahat ng larawan, musika, at nilalaman ay pag-aari ng Mathtatag o ng may-ari nito.\n6. Update: Maaring magbago ang app ng mga tampok o tuntunin anumang oras.\n7. Suporta: Para sa tanong o isyu, kontakin ang iyong guro o app support.\n\nSa pagpapatuloy ng paggamit ng Mathtatag, tinatanggap mo ang mga tuntuning ito.`
   };
+
+  const mapImages = [map1, map2, map3, map4];
+  const [currentMapIdx, setCurrentMapIdx] = useState(0);
 
   return (
     <Animated.View style={[styles.container, { opacity: fadeAnim }]}> 
@@ -359,83 +371,23 @@ export default function Homepage() {
         resizeMode="contain" 
       />
 
-      {/* Maps Grid Centered */}
-      <View style={styles.mapsGridContainer}>
-        <View style={styles.mapsRow}>
-          <TouchableOpacity style={styles.mapWrapper} onPress={() => router.push('/Map1')}>
-            <Animated.View
-              style={{
-                transform: [
-                  { scale: mapScales[0] },
-                  {
-                    rotateY: mapRotations[0].interpolate({
-                      inputRange: [0, 1],
-                      outputRange: ['-15deg', '15deg'],
-                    }),
-                  },
-                ],
-              }}
-            >
-              <Image source={map1} style={styles.mapImage} resizeMode="cover" />
-            </Animated.View>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.mapWrapper} onPress={() => Alert.alert('Maintenance', 'Sorry this map is unavailable.The game is under develope.')}> 
-            <Animated.View
-              style={{
-                transform: [
-                  { scale: mapScales[1] },
-                  {
-                    rotateY: mapRotations[1].interpolate({
-                      inputRange: [0, 1],
-                      outputRange: ['-15deg', '15deg'],
-                    }),
-                  },
-                ],
-              }}
-            >
-              <Image source={map2} style={styles.mapImage} resizeMode="cover" />
-              <Animated.Image source={lock} style={[styles.lockIcon, { transform: [{ scale: lockBeat }] }]} resizeMode="contain" />
-            </Animated.View>
-          </TouchableOpacity>
+      {/* Deck with arrows and map inside, centered below logo */}
+      <View style={styles.deckContainer}>
+        <TouchableOpacity onPress={() => setCurrentMapIdx(idx => idx > 0 ? idx - 1 : mapImages.length - 1)} style={{position:'absolute',left:0,top:'50%',zIndex:5}}>
+          <Image source={arrowL} style={styles.arrowLeft} resizeMode="contain" />
+        </TouchableOpacity>
+        <Image source={deck} style={styles.deckImage} resizeMode="contain" />
+        {/* Map image centered on deck */}
+        <View style={{position:'absolute',left:'50%',top:'50%',width:320,height:500,marginLeft:-160,marginTop:-235,zIndex:4,alignItems:'center',justifyContent:'center'}}>
+          <Image source={mapImages[currentMapIdx]} style={styles.mapOnDeck} resizeMode="contain" />
+          {/* Lock overlay for maps 2, 3, 4 */}
+          {currentMapIdx > 0 && (
+            <Image source={lock} style={styles.lockOverlay} resizeMode="contain" />
+          )}
         </View>
-        <View style={styles.mapsRow}>
-          <TouchableOpacity style={styles.mapWrapper} onPress={() => Alert.alert('Maintenance', 'Sorry this map is unavailable.The game is under develope.')}>
-            <Animated.View
-              style={{
-                transform: [
-                  { scale: mapScales[2] },
-                  {
-                    rotateY: mapRotations[2].interpolate({
-                      inputRange: [0, 1],
-                      outputRange: ['-15deg', '15deg'],
-                    }),
-                  },
-                ],
-              }}
-            >
-              <Image source={map3} style={styles.mapImage} resizeMode="cover" />
-              <Animated.Image source={lock} style={[styles.lockIcon, { transform: [{ scale: lockBeat }] }]} resizeMode="contain" />
-            </Animated.View>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.mapWrapper} onPress={() => Alert.alert('Maintenance', 'Sorry this map is unavailable.The game is under develope.')}>
-            <Animated.View
-              style={{
-                transform: [
-                  { scale: mapScales[3] },
-                  {
-                    rotateY: mapRotations[3].interpolate({
-                      inputRange: [0, 1],
-                      outputRange: ['-15deg', '15deg'],
-                    }),
-                  },
-                ],
-              }}
-            >
-              <Image source={map4} style={styles.mapImage} resizeMode="cover" />
-              <Animated.Image source={lock} style={[styles.lockIcon, { transform: [{ scale: lockBeat }] }]} resizeMode="contain" />
-            </Animated.View>
-          </TouchableOpacity>
-        </View>
+        <TouchableOpacity onPress={() => setCurrentMapIdx(idx => idx < mapImages.length - 1 ? idx + 1 : 0)} style={{position:'absolute',right:0,top:'50%',zIndex:5}}>
+          <Image source={arrowR} style={styles.arrowRight} resizeMode="contain" />
+        </TouchableOpacity>
       </View>
 
       {/* Play Button with pulse effect */}
@@ -498,14 +450,14 @@ const styles = StyleSheet.create({
     bottom: 30,
     alignSelf: 'center',
     zIndex: 10,
-    width: 200,
-    height: 220,
+    width: 100,
+    height: 230,
     alignItems: 'center',
     justifyContent: 'center',
   },
   playIcon: {
     width: 150,
-    height: 315,
+    height: 320,
   },
   homeBtn: {
     position: 'absolute',
@@ -602,48 +554,6 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     fontSize: 15,
   },
-  mapsGridContainer: {
-    position: 'absolute',
-    top: '32%',
-    left: 0,
-    right: 0,
-    alignItems: 'center',
-    justifyContent: 'center',
-    zIndex: 5,
-  },
-  mapsRow: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    marginBottom: 20,
-  },
-  mapImage: {
-    width: 170,
-    height: 150,
-    marginHorizontal: -3,
-    borderRadius: 15,
-    elevation: 4,
-  },
-  mapWrapper: {
-    position: 'relative',
-    justifyContent: 'center',
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.20,
-    shadowRadius: 9.0,
-    elevation: 12,
-  },
-  lockIcon: {
-    position: 'absolute',
-    top: '50%',
-    left: '50%',
-    width: 105,
-    height: 105,
-    marginLeft: -52.5,
-    marginTop: -52.5,
-    zIndex: 10,
-    opacity: 0.95,
-  },
   aboutPanel: {
     width: 340,
     maxWidth: 360,
@@ -676,5 +586,62 @@ const styles = StyleSheet.create({
     lineHeight: 19,
     flexShrink: 1,
     flexGrow: 1,
+  },
+  deckContainer: {
+    width: 500,
+    height: 700,
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    position: 'relative',
+    marginTop: -320,
+    marginBottom: 20,
+    zIndex: 3,
+  },
+  deckImage: {
+    width: 500,
+    height: 700,
+    alignSelf: 'center',
+    zIndex: 3,
+  },
+  arrowLeft: {
+    position: 'absolute',
+    left: 0,
+    top: '50%',
+    width: 280,
+    height: 150,
+    marginTop: -60,
+    zIndex: 4,
+  },
+  arrowRight: {
+    position: 'absolute',
+    right: 0,
+    top: '50%',
+    width: 280,
+    height: 150,
+    marginTop: -60,
+    zIndex: 4,
+  },
+  mapOnDeck: {
+    position: 'absolute',
+    left: '50%',
+    top: '50%',
+    width: 320,
+    height: 500,
+    marginLeft: -160,
+    marginTop: -253,
+    zIndex: 4,
+  },
+  lockOverlay: {
+    position: 'absolute',
+    left: '50%',
+    top: '50%',
+    width: 80,
+    height: 150,
+    marginLeft: -41,
+    marginTop: -80,
+    zIndex: 10,
+    opacity: 0.85,
   },
 }); 

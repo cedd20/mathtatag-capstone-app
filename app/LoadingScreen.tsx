@@ -1,3 +1,4 @@
+import { useFonts } from 'expo-font';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useRef } from 'react';
 import { Animated, Dimensions, Image, StyleSheet, Text, View } from 'react-native';
@@ -11,6 +12,10 @@ export default function LoadingScreen() {
   const { studentId, classId } = useLocalSearchParams();
   const fadeAnim = useRef(new Animated.Value(1)).current;
   const progressAnim = useRef(new Animated.Value(0)).current;
+
+  const [fontsLoaded] = useFonts({
+    'LuckiestGuy': require('../assets/fonts/LuckiestGuy-Regular.ttf'),
+  });
 
   useEffect(() => {
     Animated.timing(progressAnim, {
@@ -33,11 +38,13 @@ export default function LoadingScreen() {
     outputRange: ['0%', '60%'],
   });
 
+  if (!fontsLoaded) return null;
+
   return (
     <Animated.View style={[styles.loadingOverlay, { opacity: fadeAnim }]}> 
       <Image source={bgWelcome} style={styles.bg} resizeMode="cover" />
       <View style={styles.loadingTextWrap}>
-        <Text style={styles.cartoonLoadingText}>LOADING</Text>
+        <Text style={[styles.cartoonLoadingText, { fontFamily: 'LuckiestGuy' }]}>LOADING</Text>
       </View>
       <View style={styles.cartoonProgressBarWrap}>
         <Animated.View style={[styles.cartoonProgressBar, { width: barWidth }]}> 

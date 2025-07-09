@@ -24,6 +24,7 @@ export default function AdminLogin() {
   const [fontsLoaded] = useFonts({
     'LeagueSpartan-Bold': require('../assets/fonts/LeagueSpartan-Bold.ttf'),
   });
+  if (!fontsLoaded) return null;
 
   useEffect(() => {
     (async () => {
@@ -36,8 +37,6 @@ export default function AdminLogin() {
       }
     })();
   }, []);
-
-  if (!fontsLoaded) return null;
 
   async function handleLogin() {
     setLoading(true);
@@ -70,7 +69,7 @@ export default function AdminLogin() {
   }
 
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: '#f7fafc' }}>
+    <SafeAreaView style={{ flex: 1, backgroundColor: '#f7fafc' }} edges={['left','right','bottom']}>
       <ImageBackground source={bgImage} style={styles.bg} imageStyle={{ opacity: 0.13, resizeMode: 'cover' }}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.container}>
           <View style={styles.card}>
