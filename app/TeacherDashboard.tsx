@@ -1,19 +1,17 @@
-import { AntDesign, MaterialCommunityIcons, MaterialIcons } from '@expo/vector-icons';
+import { MaterialCommunityIcons, MaterialIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { Audio } from 'expo-av';
+import * as Clipboard from 'expo-clipboard';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
-import { onAuthStateChanged } from 'firebase/auth';
+import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { get, onValue, ref, remove, set } from 'firebase/database';
 import React, { useEffect, useState } from 'react';
-import { Alert, Dimensions, FlatList, ImageBackground, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { ActivityIndicator, Alert, Dimensions, FlatList, ImageBackground, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { G, Path, Svg } from 'react-native-svg';
 import { auth, db } from '../constants/firebaseConfig';
 
 const bgImage = require('../assets/images/bg.jpg');
-
-const { width } = Dimensions.get('window');
 
 interface Student {
   id: string;
@@ -33,29 +31,125 @@ interface ClassData {
   teacherId: string;
   studentIds: string[];
   students?: Student[]; // Optional for runtime compatibility
-  tasks: { title: string; details: string; status: string }[];
+  tasks: { title: string; details: string; status: string; preRating?: number; postRating?: number }[];
   learnersPerformance: { label: string; color: string; percent: number }[];
 }
 
-type ModalType = 'addClass' | 'addStudent' | 'announce' | 'category' | 'taskInfo' | 'classList' | 'startTest' | 'editStudent' | 'showImprovement' | 'evaluateStudent' | 'studentInfo' | null;
+type ModalType = 'addClass' | 'addStudent' | 'announce' | 'category' | 'taskInfo' | 'classList' | 'parentList' | 'startTest' | 'editStudent' | 'showImprovement' | 'evaluateStudent' | 'studentInfo' | null;
+
+// Helper: Compute performance distribution for pre/post test
+function getPerformanceDistribution(students: Student[] = [], type: 'pre' | 'post') {
+  const categories = [
+    { label: 'Not yet taken', color: '#c0c0c0' },
+    { label: 'Intervention', color: '#e6f4ea' },      // red
+    { label: 'Consolidation', color: '#c2e8cd' },    // peach/orange
+    { label: 'Enhancement', color: '#a0d9b5' },      // yellow
+    { label: 'Proficient', color: '#7ccc98' },       // light green
+    { label: 'Highly Proficient', color: '#5bbd7d' },// main green
+  ];
+  // Count students in each category
+  const counts = [0, 0, 0, 0, 0, 0];
+  students.forEach(student => {
+    const scoreObj = type === 'pre' ? student.preScore : student.postScore;
+    if (!scoreObj || (typeof scoreObj.pattern !== 'number' && typeof scoreObj.numbers !== 'number')) {
+      counts[0]++;
+      return;
+    }
+    const score = (scoreObj.pattern ?? 0) + (scoreObj.numbers ?? 0);
+    if (typeof score !== 'number' || score <= 0) {
+      counts[0]++;
+      return;
+    }
+    const percent = (score / 20) * 100;
+    if (percent < 25) counts[1]++;
+    else if (percent < 50) counts[2]++;
+    else if (percent < 75) counts[3]++;
+    else if (percent < 85) counts[4]++;
+    else counts[5]++;
+  });
+  const sum = counts.reduce((a, b) => a + b, 0);
+  if (sum < 2) {
+    // Not enough valid scores
+    return categories.map(cat => ({ ...cat, color: '#bbb', percent: 0 }));
+  }
+  return categories.map((cat, i) => ({
+    ...cat,
+    percent: Math.round((counts[i] / sum) * 100),
+  }));
+}
+
+// Calls your GPT endpoint at https://mathtatag-api.onrender.com/gpt
+const askGpt = async (prompt: string): Promise<string> => {
+  const response = await fetch('https://mathtatag-api.onrender.com/gpt', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prompt }),
+  });
+
+  if (!response.ok) {
+    let error, text;
+    try {
+      error = await response.json();
+    } catch {
+      error = {};
+    }
+    try {
+      text = await response.text();
+    } catch {
+      text = '';
+    }
+    throw new Error((error.error || text || 'Unknown error') + (error.details ? ('\nDetails: ' + error.details) : ''));
+  }
+
+  const result = await response.json();
+  return result.response;
+};
+
+interface TaskSummary {
+  title: string;
+  details: string;
+  preScore: number | string;
+  postScore: number | string;
+}
+
+interface FeedbackPromptParams {
+  studentName: string;
+  patternScore: number;
+  subtractionScore: number;
+  percentImprovement: number;
+  taskSummaries: TaskSummary[];
+}
+
+// 📄 Generates the teacher-style feedback prompt
+const generateFeedbackPrompt = ({
+  studentName,
+  patternScore,
+  subtractionScore,
+  percentImprovement,
+  taskSummaries
+}: FeedbackPromptParams): string => {
+  const tasksFormatted = taskSummaries.map((task: TaskSummary) =>
+    `- ${task.title} – ${task.details} (Score: ${task.preScore}⭐ ➝ ${task.postScore}⭐)`
+  ).join('\n');
+
+  return `Ako ay isang guro ng Grade 1. Tulungan mo akong gumawa ng malinaw, makabuluhan, at suportadong payo para sa magulang ng batang si ${studentName}. Narito ang impormasyon tungkol sa kanya:
+ - Score sa pattern recognition: ${patternScore}/10
+ - Score sa subtraction: ${subtractionScore}/10
+ - Pagbuti mula pretest: ${percentImprovement}%\n\nNarito rin ang mga home-based tasks na ibinigay ng magulang para suportahan ang kanyang pagkatuto at ang assessment scores sa bawat isa:\n${tasksFormatted}\n\nBilang guro, nais kong bigyang-pugay ang pagsusumikap ng magulang, magbigay ng positibong feedback, at magrekomenda ng mga dagdag na hakbang upang lalo pang mapaunlad ang kakayahan ni ${studentName}. Mangyaring isulat ang iyong mensahe bilang isang guro na nagbibigay-gabay, nagpapakita ng suporta, at kinikilala ang aktibong partisipasyon ng magulang sa pagkatuto ng anak. Isulat ito sa isang tuwirang talata lamang.`;
+};
 
 export default function TeacherDashboard() {
-  const router = useRouter();
   const [currentTeacher, setCurrentTeacher] = useState<any>(null);
   const [teacherName, setTeacherName] = useState('');
   const [modalType, setModalType] = useState<ModalType>(null);
   const [modalVisible, setModalVisible] = useState(false);
   const [classSection, setClassSection] = useState('');
-  const [classSchool, setClassSchool] = useState('');
-  const [className, setClassName] = useState('');
   const [studentNickname, setStudentNickname] = useState('');
   const [announceText, setAnnounceText] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
   const [testType, setTestType] = useState<'pre' | 'post' | null>(null);
   const [selectedClassId, setSelectedClassId] = useState<string | null>(null);
-  const [selectedPerformance, setSelectedPerformance] = useState<{ classId: string, idx: number } | null>(null);
-  const [showTooltip, setShowTooltip] = useState(false);
   const [sortColumn, setSortColumn] = useState<'name' | 'status' | 'pre' | 'post'>('name');
   const [sortAsc, setSortAsc] = useState(true);
   const [editingStudent, setEditingStudent] = useState<Student | null>(null);
@@ -64,7 +158,6 @@ export default function TeacherDashboard() {
   const [evaluationData, setEvaluationData] = useState<{ student: Student, classId: string } | null>(null);
   const [evaluationText, setEvaluationText] = useState('');
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
   const [classes, setClasses] = useState<ClassData[]>([]);
   const [prePattern, setPrePattern] = useState('0');
   const [preNumbers, setPreNumbers] = useState('0');
@@ -72,6 +165,59 @@ export default function TeacherDashboard() {
   const [postNumbers, setPostNumbers] = useState('0');
   const [announceTitle, setAnnounceTitle] = useState('');
   const [parentAuthCode, setParentAuthCode] = useState<string | null>(null);
+  const [copiedAuthCode, setCopiedAuthCode] = useState(false);
+  // Add state for parent list modal
+  const [parentListData, setParentListData] = useState<any[]>([]);
+  const [parentListLoading, setParentListLoading] = useState(false);
+  // Add state for parent tasks modal
+  const [parentTasksModalVisible, setParentTasksModalVisible] = useState(false);
+  const [selectedParentForTasks, setSelectedParentForTasks] = useState<any>(null);
+  const [parentTasksLoading, setParentTasksLoading] = useState(false);
+  const [parentTasks, setParentTasks] = useState<any[]>([]);
+  // Add state for parent tasks in evaluation modal
+  const [evaluationParentTasks, setEvaluationParentTasks] = useState<any[]>([]);
+  const [evaluationParentTasksLoading, setEvaluationParentTasksLoading] = useState(false);
+  // Add state for ghostwriter loading
+  const [ghostLoading, setGhostLoading] = useState(false);
+  // Add this to the top-level state declarations
+  const [evaluationShowAllTasks, setEvaluationShowAllTasks] = useState(false);
+  // Add state for ghostwriter text visibility
+  const [showGhostwriterText, setShowGhostwriterText] = useState(true);
+  // Add state for ghostwriter loading statements
+  const ghostLoadingStatements = [
+    'Analyzing tasks and progress...',
+    'Classifying strengths and areas for growth...',
+    'Composing feedback for the parent...',
+    'Summarizing student performance...'
+  ];
+  const [ghostLoadingStatementIdx, setGhostLoadingStatementIdx] = useState(0);
+  // Add state for hamburger menu
+  const [openMenuClassId, setOpenMenuClassId] = useState<string | null>(null);
+  // Add state for profile menu
+  const [showProfileMenu, setShowProfileMenu] = useState(false);
+  const router = useRouter();
+
+  // Place all useEffect hooks here, after all useState hooks
+  useEffect(() => {
+    let interval: any;
+    if (ghostLoading) {
+      setGhostLoadingStatementIdx(0);
+      interval = setInterval(() => {
+        setGhostLoadingStatementIdx(idx => (idx + 1) % ghostLoadingStatements.length);
+      }, 1200);
+    } else {
+      setGhostLoadingStatementIdx(0);
+      if (interval) clearInterval(interval);
+    }
+    return () => { if (interval) clearInterval(interval); };
+  }, [ghostLoading]);
+
+  // Add useEffect to handle auto-selecting class for announcements
+  useEffect(() => {
+    if (modalType === 'announce' && classes.length === 1 && !selectedClassId) {
+      setSelectedClassId(classes[0].id);
+    }
+  }, [modalType, classes, selectedClassId]);
 
   // Safety net: Stop any background music when this screen gains focus
   useFocusEffect(
@@ -89,11 +235,12 @@ export default function TeacherDashboard() {
 
   // Use theme-matching harmonious colors for the chart
   const defaultCategories = [
-    { label: 'Intervention', color: '#ff5a5a' },      // red
-    { label: 'Consolidation', color: '#ffb37b' },    // peach/orange
-    { label: 'Enhancement', color: '#ffe066' },      // yellow
-    { label: 'Proficient', color: '#7ed957' },       // light green
-    { label: 'Highly Proficient', color: '#27ae60' },// main green
+    { label: 'Not yet taken', color: '#c0c0c0' },
+    { label: 'Intervention', color: '#e6f4ea' },      // red
+    { label: 'Consolidation', color: '#c2e8cd' },    // peach/orange
+    { label: 'Enhancement', color: '#a0d9b5' },      // yellow
+    { label: 'Proficient', color: '#7ccc98' },       // light green
+    { label: 'Highly Proficient', color: '#5bbd7d' },// main green
   ];
 
   // Load current teacher and their data
@@ -162,49 +309,29 @@ export default function TeacherDashboard() {
   // Helper to get a class by id
   const getClassById = (id: string | null) => classes.find(cls => cls.id === id) || null;
 
-  // Manual refresh function
-  const refreshData = async () => {
-    setRefreshing(true);
-    try {
-      if (currentTeacher) {
-        const classesRef = ref(db, `Classes`);
-        const snapshot = await get(classesRef);
-        const data = snapshot.val();
-        console.log('Manual refresh - Classes data:', data);
-        if (data) {
-          const teacherClasses = Object.values(data).filter((cls: any) => {
-            console.log('Manual refresh - Checking class:', cls.id, 'teacherId:', cls.teacherId, 'currentTeacher:', currentTeacher.teacherId);
-            return cls.teacherId === currentTeacher.teacherId;
-          }).map((cls: any) => ({
-            ...cls,
-            students: cls.students || [],
-            school: cls.school || cls.className || 'Unknown School',
-            section: cls.section || cls.className || 'Unknown Section'
-          })) as ClassData[];
-          console.log('Manual refresh - Filtered teacher classes:', teacherClasses);
-          setClasses(teacherClasses);
-        } else {
-          setClasses([]);
-        }
-      }
-    } catch (error) {
-      console.error('Error refreshing data:', error);
-      Alert.alert('Error', 'Failed to refresh data. Please try again.');
-    } finally {
-      setRefreshing(false);
-    }
-  };
-
   // Analytics calculations
   const totalClasses = classes?.length || 0;
   const totalStudents = classes?.reduce((sum, c) => sum + (c.students?.length || 0), 0) || 0;
   const allPerformance = classes?.flatMap(c => c.learnersPerformance?.map(lp => lp.percent) || []) || [];
+  // For dashboard avgImprovement, only include students with both pre and post and pre > 0
+  const allStudentsWithBoth = classes.flatMap(cls => (cls.students ?? []).filter(s => {
+    const hasPre = s.preScore && typeof s.preScore.pattern === 'number' && typeof s.preScore.numbers === 'number';
+    const hasPost = s.postScore && typeof s.postScore.pattern === 'number' && typeof s.postScore.numbers === 'number';
+    const pre = (s.preScore?.pattern ?? 0) + (s.preScore?.numbers ?? 0);
+    const post = (s.postScore?.pattern ?? 0) + (s.postScore?.numbers ?? 0);
+    // Only include if both pre and post exist and pre > 0 and post > 0
+    return hasPre && hasPost && pre > 0 && post > 0;
+  }));
   const avgPerformance = allPerformance.length ? Math.round(allPerformance.reduce((a, b) => a + b, 0) / allPerformance.length) : 0;
-  const mostImprovedGroup = (() => {
-    // For demo, just pick the group with the highest percent in the first class
-    if (!classes?.[0]?.learnersPerformance) return 'N/A';
-    return classes[0].learnersPerformance.reduce((a, b) => (a.percent > b.percent ? a : b)).label;
-  })();
+  let dashboardAvgImprovement = 0;
+  if (allStudentsWithBoth.length > 0) {
+    const improvements = allStudentsWithBoth.map(s => {
+      const pre = (s.preScore?.pattern ?? 0) + (s.preScore?.numbers ?? 0);
+      const post = (s.postScore?.pattern ?? 0) + (s.postScore?.numbers ?? 0);
+      return pre > 0 ? ((post - pre) / pre) * 100 : 0;
+    });
+    dashboardAvgImprovement = Math.round(improvements.reduce((a, b) => a + b, 0) / improvements.length);
+  }
 
   // Modal open/close helpers
   const openModal = (type: ModalType, extra: any = null) => {
@@ -231,7 +358,6 @@ export default function TeacherDashboard() {
         setEditingStudent(extra.student);
         setEditingStudentName(extra.student.nickname);
         setSelectedClassId(extra.classId);
-        // Initialize the form values
         setPrePattern(extra.student?.preScore?.pattern?.toString() ?? '0');
         setPreNumbers(extra.student?.preScore?.numbers?.toString() ?? '0');
         setPostPattern(extra.student?.postScore?.pattern?.toString() ?? '0');
@@ -242,13 +368,35 @@ export default function TeacherDashboard() {
       setImprovementData(extra);
     }
     if (type === 'evaluateStudent') {
+      setEvaluationShowAllTasks(false);
       setEvaluationData(extra);
       setEvaluationText('');
+      setEvaluationParentTasks([]);
+      setEvaluationParentTasksLoading(true);
+      setShowGhostwriterText(true); // Show text initially
+      setTimeout(() => setShowGhostwriterText(false), 5000); // Hide after 5 seconds
+      // Fetch parent tasks for this student
+      if (extra?.student?.parentId) {
+        get(ref(db, `Parents/${extra.student.parentId}/tasks`)).then(tasksSnap => {
+          let loadedTasks = [];
+          if (tasksSnap.exists()) {
+            loadedTasks = tasksSnap.val();
+            if (!Array.isArray(loadedTasks)) loadedTasks = Object.values(loadedTasks);
+          }
+          setEvaluationParentTasks(loadedTasks);
+          setEvaluationParentTasksLoading(false);
+        }).catch(() => {
+          setEvaluationParentTasks([]);
+          setEvaluationParentTasksLoading(false);
+        });
+      } else {
+        setEvaluationParentTasks([]);
+        setEvaluationParentTasksLoading(false);
+      }
     }
     if (type === 'studentInfo') {
       if (extra?.student) {
         setSelectedStudent(extra.student);
-        // Fetch parent auth code
         setParentAuthCode(null); // reset first
         if (extra.student.parentId) {
           const parentRef = ref(db, `Parents/${extra.student.parentId}`);
@@ -263,6 +411,59 @@ export default function TeacherDashboard() {
         }
       }
     }
+    // Parent List Modal: fetch all parents for the class
+    if (type === 'parentList') {
+      setSelectedClassId(extra?.classId);
+      setParentListLoading(true);
+      setParentListData([]);
+      const cls = getClassById(extra?.classId);
+      if (cls && Array.isArray(cls.students)) {
+        // For each student, fetch parent
+        Promise.all(
+          cls.students.map(async (student) => {
+            if (!student.parentId) return null;
+            const parentSnap = await get(ref(db, `Parents/${student.parentId}`));
+            if (!parentSnap.exists()) return null;
+            const parent = parentSnap.val();
+            // Fetch tasks for this parent
+            let tasks = [];
+            try {
+              const tasksSnap = await get(ref(db, `Parents/${parent.parentId}/tasks`));
+              if (tasksSnap.exists()) {
+                let loadedTasks = tasksSnap.val();
+                if (!Array.isArray(loadedTasks)) loadedTasks = Object.values(loadedTasks);
+                tasks = loadedTasks;
+              }
+            } catch {}
+            // Calculate progress
+            const doneCount = tasks.filter((t:any) => t.status === 'done').length;
+            const progressPercent = tasks.length > 0 ? Math.round((doneCount / tasks.length) * 100) : 0;
+            // Calculate pre/post average (stars out of 5)
+            // Use student's preScore/postScore
+            const preTotal = (student.preScore?.pattern ?? 0) + (student.preScore?.numbers ?? 0);
+            const postTotal = (student.postScore?.pattern ?? 0) + (student.postScore?.numbers ?? 0);
+            // Map 0-20 to 0-5 stars
+            const preStars = Math.round((preTotal / 20) * 5);
+            const postStars = Math.round((postTotal / 20) * 5);
+            return {
+              parentName: parent.name,
+              studentName: student.nickname,
+              householdIncome: parent.householdIncome,
+              preStars,
+              postStars,
+              progressPercent,
+              student,
+              parent,
+            };
+          })
+        ).then((results) => {
+          setParentListData(results.filter(Boolean));
+          setParentListLoading(false);
+        });
+      } else {
+        setParentListLoading(false);
+      }
+    }
     setModalVisible(true);
   };
 
@@ -270,8 +471,6 @@ export default function TeacherDashboard() {
     setModalVisible(false);
     setModalType(null);
     setClassSection('');
-    setClassSchool('');
-    setClassName('');
     setStudentNickname('');
     setAnnounceText('');
     setAnnounceTitle('');
@@ -284,6 +483,7 @@ export default function TeacherDashboard() {
     setImprovementData(null);
     setEvaluationData(null);
     setEvaluationText('');
+    setEvaluationShowAllTasks(false);
   };
 
   // Add new class to database
@@ -294,37 +494,21 @@ export default function TeacherDashboard() {
     }
 
     try {
-      // Generate school abbreviation for readable class ID
-      const schoolName = classSchool.trim() || 'Unknown School';
+      // Use the teacher's school from the Teachers table
+      const schoolName = currentTeacher.school || 'Unknown School';
       const schoolAbbreviation = schoolName.split(' ').map((word: string) => word.charAt(0)).join('') + 'ES';
       const currentYear = new Date().getFullYear();
-      
       // Generate readable class ID: SCHOOLABBR-SECTION-YEAR
       const readableClassId = `${schoolAbbreviation.toUpperCase()}-${classSection.trim().toUpperCase()}-${currentYear}`;
-      
       const newClass: ClassData = {
         id: readableClassId,
         school: schoolName,
         section: classSection.trim(),
         teacherId: currentTeacher.teacherId,
         studentIds: [],
-        students: [],
-        tasks: [
-          { title: 'Intervention', details: 'Remedial activities for struggling students', status: 'pending' },
-          { title: 'Consolidation', details: 'Group activities to reinforce learning', status: 'pending' },
-          { title: 'Enhancement', details: 'Advanced activities for proficient students', status: 'pending' },
-          { title: 'Proficient', details: 'Challenging tasks for high performers', status: 'pending' },
-          { title: 'Highly Proficient', details: 'Excellence-focused activities', status: 'pending' },
-        ],
-        learnersPerformance: [
-          { label: 'Intervention', color: '#ff5a5a', percent: 0 },
-          { label: 'Consolidation', color: '#ffb37b', percent: 0 },
-          { label: 'Enhancement', color: '#ffe066', percent: 0 },
-          { label: 'Proficient', color: '#7ed957', percent: 0 },
-          { label: 'Highly Proficient', color: '#27ae60', percent: 0 },
-        ],
+        tasks: [],
+        learnersPerformance: [],
       };
-
       await set(ref(db, `Classes/${readableClassId}`), newClass);
       Alert.alert('Success', `Class created successfully!\n\nClass ID: ${readableClassId}`);
       closeModal();
@@ -526,13 +710,7 @@ export default function TeacherDashboard() {
   const startTest = () => {
     // Navigate to loading screen with student and classId as params
     if (selectedStudent && selectedClassId && testType === 'pre') {
-      router.push({
-        pathname: '/LoadingScreen',
-        params: {
-          studentId: selectedStudent.id,
-          classId: selectedClassId,
-        },
-      });
+      router.push({ pathname: '/LoadingScreen', params: { studentId: selectedStudent.id, classId: selectedClassId } });
       closeModal();
     } else {
       Alert.alert('Error', 'Missing student or class information.');
@@ -545,91 +723,7 @@ export default function TeacherDashboard() {
       closeModal();
   };
 
-  // Modern, 3D/gradient, adaptive analytics cards
-  function AnalyticsCards() {
-    return (
-      <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 2, gap: 4, flexWrap: 'wrap' }}>
-        <LinearGradient colors={['#e0ffe6', '#c6f7e2']} style={styles.analyticsCard}>
-          <AntDesign name="appstore1" size={32} color="#27ae60" style={styles.analyticsIcon} />
-          <Text style={styles.analyticsValue}>{totalClasses}</Text>
-          <Text style={styles.analyticsLabel}>Total{'\n'}Classes</Text>
-        </LinearGradient>
-        <LinearGradient colors={['#e0f7fa', '#b2ebf2']} style={styles.analyticsCard}>
-          <MaterialCommunityIcons name="account-group" size={32} color="#0097a7" style={styles.analyticsIcon} />
-          <Text style={styles.analyticsValue}>{totalStudents}</Text>
-          <Text style={styles.analyticsLabel}>Total{'\n'}Students</Text>
-        </LinearGradient>
-        <LinearGradient colors={['#fffde4', '#ffe066']} style={styles.analyticsCard}>
-          <AntDesign name="piechart" size={32} color="#ffb300" style={styles.analyticsIcon} />
-          <Text style={styles.analyticsValue}>{avgPerformance}%</Text>
-          <Text style={styles.analyticsLabel}>Average{'\n'}Performance</Text>
-        </LinearGradient>
-      </View>
-    );
-  }
 
-  // Modern student count card with icon and number
-  function StudentCountCard({ count, iconSize = 24, fontSize = 18 }: { count: number, iconSize?: number, fontSize?: number }) {
-    return (
-      <View style={{
-        flexDirection: 'row',
-        alignItems: 'center',
-        backgroundColor: '#e0f7fa',
-        borderRadius: 12,
-        paddingVertical: 4,
-        paddingHorizontal: 8,
-        marginTop: 2,
-        marginRight: 0,
-        marginBottom: 4,
-        minWidth: 40,
-        justifyContent: 'center',
-      }}>
-        <MaterialCommunityIcons name="account-group" size={iconSize} color="#0097a7" style={{ marginRight: 4 }} />
-        <Text style={{ fontSize, fontWeight: 'bold', color: '#0097a7' }}>{count}</Text>
-      </View>
-    );
-  }
-
-  // Helper: Compute performance distribution for pre/post test
-  function getPerformanceDistribution(students: Student[] = [], type: 'pre' | 'post') {
-    const categories = [
-      { label: 'Intervention', color: '#ff5a5a' },
-      { label: 'Consolidation', color: '#ffb37b' },
-      { label: 'Enhancement', color: '#ffe066' },
-      { label: 'Proficient', color: '#7ed957' },
-      { label: 'Highly Proficient', color: '#27ae60' },
-    ];
-    // Only count students with a valid score
-    const validScores = students.map(student => {
-      const scoreObj = type === 'pre' ? student.preScore : student.postScore;
-      if (!scoreObj) return null;
-      const score = (scoreObj.pattern ?? 0) + (scoreObj.numbers ?? 0);
-      if (typeof score !== 'number' || score < 0) return null;
-      return score;
-    }).filter(score => typeof score === 'number');
-    if (validScores.length < 2) {
-      // Not enough data: all gray
-      return categories.map(cat => ({ ...cat, color: '#bbb', percent: 0 }));
-    }
-    const counts = [0, 0, 0, 0, 0];
-    validScores.forEach(score => {
-      const percent = (score! / 20) * 100;
-      if (percent < 25) counts[0]++;
-      else if (percent < 50) counts[1]++;
-      else if (percent < 75) counts[2]++;
-      else if (percent < 85) counts[3]++;
-      else counts[4]++;
-    });
-    const sum = counts.reduce((a, b) => a + b, 0);
-    if (sum < 2) {
-      // Not enough valid scores
-      return categories.map(cat => ({ ...cat, color: '#bbb', percent: 0 }));
-    }
-    return categories.map((cat, i) => ({
-      ...cat,
-      percent: Math.round((counts[i] / sum) * 100),
-    }));
-  }
 
   // Responsive pie chart with legend always side by side
   function AnalyticsPieChartWithLegend({ data, reverse = false, title = 'Pretest Performance' }: { data: { label: string; color: string; percent: number }[], reverse?: boolean, title?: string }) {
@@ -733,42 +827,7 @@ export default function TeacherDashboard() {
     );
   }
 
-  const StudentItem = ({ item, classId }: { item: Student; classId: string }) => {
-    const handleDeleteStudent = () => {
-      deleteStudent(item.id);
-    };
 
-    return (
-      <View style={styles.studentItem}>
-        <View style={styles.studentInfo}>
-          <Text style={styles.studentNickname}>{item.nickname}</Text>
-          <Text style={styles.studentNumber}>ID: {item.studentNumber}</Text>
-        </View>
-        <View style={styles.testButtons}>
-          <TouchableOpacity 
-            style={[styles.testButton, styles.preTestButton]} 
-            onPress={() => openModal('startTest', { student: item, testType: 'pre', classId })}
-          >
-            <Text style={styles.testButtonText}>Pre: {item.preScore ? `${(item.preScore.pattern || 0) + (item.preScore.numbers || 0)}` : '0'}</Text>
-          </TouchableOpacity>
-          <TouchableOpacity 
-            style={[styles.testButton, styles.postTestButton]} 
-            onPress={() => openModal('startTest', { student: item, testType: 'post', classId })}
-          >
-            <Text style={styles.testButtonText}>Post: {item.postScore ? `${(item.postScore.pattern || 0) + (item.postScore.numbers || 0)}` : '0'}</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
-    );
-  };
-
-  const StudentItemRenderer = ({ item, classId }: { item: Student; classId: string }) => (
-    <StudentItem item={item} classId={classId} />
-  );
-
-  const renderStudentItem = (classId: string) => ({ item }: { item: Student }) => (
-    <StudentItemRenderer item={item} classId={classId} />
-  );
 
   if (loading) {
     return (
@@ -804,14 +863,6 @@ export default function TeacherDashboard() {
 
   // Render each class panel
   const renderClassPanel = (cls: ClassData) => {
-    // Group students by category
-    const studentsByCategory: Record<string, Student[]> = {};
-    (cls.students || []).forEach(student => {
-      if (student.category) {
-        if (!studentsByCategory[student.category]) studentsByCategory[student.category] = [];
-        studentsByCategory[student.category].push(student);
-      }
-    });
     // Delete class handler
     const handleDeleteClass = () => {
       Alert.alert('Delete Class', `Are you sure you want to delete class ${cls.section}?`, [
@@ -827,10 +878,10 @@ export default function TeacherDashboard() {
     const studentsWithBoth = (cls.students ?? []).filter(s => {
       const hasPre = s.preScore && typeof s.preScore.pattern === 'number' && typeof s.preScore.numbers === 'number';
       const hasPost = s.postScore && typeof s.postScore.pattern === 'number' && typeof s.postScore.numbers === 'number';
-      // Consider as 'taken' if at least one part is > 0, or both are zero (i.e., test was submitted)
-      const preTaken = hasPre && s.preScore && (s.preScore.pattern > 0 || s.preScore.numbers > 0 || (s.preScore.pattern === 0 && s.preScore.numbers === 0));
-      const postTaken = hasPost && s.postScore && (s.postScore.pattern > 0 || s.postScore.numbers > 0 || (s.postScore.pattern === 0 && s.postScore.numbers === 0));
-      return preTaken && postTaken;
+      const pre = (s.preScore?.pattern ?? 0) + (s.preScore?.numbers ?? 0);
+      const post = (s.postScore?.pattern ?? 0) + (s.postScore?.numbers ?? 0);
+      // Only include if both pre and post exist and pre > 0 and post > 0
+      return hasPre && hasPost && pre > 0 && post > 0;
     });
     let avgImprovement = 0;
     let avgPost = 0;
@@ -838,7 +889,7 @@ export default function TeacherDashboard() {
       const improvements = studentsWithBoth.map(s => {
         const pre = (s.preScore?.pattern ?? 0) + (s.preScore?.numbers ?? 0);
         const post = (s.postScore?.pattern ?? 0) + (s.postScore?.numbers ?? 0);
-        return pre === 0 ? 100 : ((post - pre) / pre) * 100;
+        return pre > 0 ? ((post - pre) / pre) * 100 : 0;
       });
       avgImprovement = Math.round(improvements.reduce((a, b) => a + b, 0) / improvements.length);
       avgPost = Math.round(studentsWithBoth.map(s => (s.postScore?.pattern ?? 0) + (s.postScore?.numbers ?? 0)).reduce((a, b) => a + b, 0) / studentsWithBoth.length);
@@ -846,29 +897,65 @@ export default function TeacherDashboard() {
     let avgImprovementColor = '#ffe066';
     if (avgImprovement > 0) avgImprovementColor = '#27ae60';
     else if (avgImprovement < 0) avgImprovementColor = '#ff5a5a';
+    // Header click handler
+    const handleSort = (col: 'name' | 'status' | 'pre' | 'post') => {
+      if (sortColumn === col) {
+        setSortAsc(!sortAsc);
+      } else {
+        setSortColumn(col);
+        setSortAsc(true);
+      }
+    };
     return (
       <LinearGradient colors={['#f7fafc', '#e0f7fa']} style={[styles.classCard, { marginBottom: 15, padding: 2, borderRadius: 32, shadowColor: '#27ae60', shadowOpacity: 0.13, shadowRadius: 18, shadowOffset: { width: 0, height: 8 }, elevation: 10, width: '100%', maxWidth: 540, alignSelf: 'center' }]}> 
         <View style={{ padding: isSmall ? 16 : 24, paddingBottom: isSmall ? 0 : 8 }}>
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: isSmall ? 9 : 8 }}>
-                <View>
-              <Text style={{ fontSize: 12, color: '#888', fontWeight: '700', marginBottom: -3 }}>{cls.school}</Text>
+            <View>
+              <Text style={{ fontSize: 12, color: '#888', fontWeight: '700', marginBottom: -3 }}>Section</Text>
               <Text style={{ fontSize: 35, color: '#27ae60', fontWeight: 'bold', letterSpacing: 1 }}>{cls.section}</Text>
-          </View>
+            </View>
             <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', marginBottom: isSmall ? 10 : 18, gap: 6, flexWrap: 'wrap', alignSelf: 'flex-end' }}>
               <TouchableOpacity onPress={() => openModal('classList', { classId: cls.id })} activeOpacity={0.8} style={{ borderRadius: 20, overflow: 'hidden', maxWidth: 48, minWidth: 0, marginHorizontal: 1 }}>
-                <StudentCountCard count={cls.students?.length || 0} iconSize={22} fontSize={16} />
+                <View style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  backgroundColor: '#e0f7fa',
+                  borderRadius: 12,
+                  paddingVertical: 4,
+                  paddingHorizontal: 8,
+                  marginTop: 2,
+                  marginRight: 0,
+                  marginBottom: 4,
+                  minWidth: 40,
+                  justifyContent: 'center',
+                }}>
+                  <MaterialCommunityIcons name="account-group" size={22} color="#0097a7" style={{ marginRight: 4 }} />
+                  <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#0097a7' }}>{cls.students?.length || 0}</Text>
+                </View>
               </TouchableOpacity>
-              <TouchableOpacity onPress={() => openModal('addStudent', { classId: cls.id })} style={{ backgroundColor: '#e0f7fa', borderRadius: 20, padding: 6, alignItems: 'center', justifyContent: 'center', elevation: 2, shadowColor: '#0097a7', shadowOpacity: 0.10, shadowRadius: 6, shadowOffset: { width: 0, height: 2 }, maxWidth: 48, minWidth: 0, marginHorizontal: 1 }}>
-                <MaterialIcons name="person-add" size={22} color="#0097a7" />
+              {/* Hamburger Menu Button */}
+              <TouchableOpacity onPress={() => setOpenMenuClassId(openMenuClassId === cls.id ? null : cls.id)} style={{ backgroundColor: '#eee', borderRadius: 20, padding: 6, alignItems: 'center', justifyContent: 'center', elevation: 2, maxWidth: 48, minWidth: 0, marginHorizontal: 1 }}>
+                <MaterialCommunityIcons name="dots-vertical" size={22} color="#888" />
               </TouchableOpacity>
-              <TouchableOpacity onPress={() => openModal('announce', { classId: cls.id })} style={{ backgroundColor: '#0097a7', borderRadius: 20, padding: 6, alignItems: 'center', justifyContent: 'center', elevation: 2, shadowColor: '#0097a7', shadowOpacity: 0.10, shadowRadius: 6, shadowOffset: { width: 0, height: 2 }, maxWidth: 48, minWidth: 0, marginHorizontal: 1 }}>
-                <MaterialIcons name="campaign" size={22} color="#fff" />
-              </TouchableOpacity>
-              <TouchableOpacity onPress={handleDeleteClass} style={{ backgroundColor: '#ffeaea', borderRadius: 20, padding: 6, alignItems: 'center', justifyContent: 'center', elevation: 2, shadowColor: '#ff5a5a', shadowOpacity: 0.10, shadowRadius: 6, shadowOffset: { width: 0, height: 2 }, maxWidth: 48, minWidth: 0, marginHorizontal: 1 }}>
-                <MaterialIcons name="delete" size={22} color="#ff5a5a" />
-              </TouchableOpacity>
+              {/* Dropdown Menu */}
+              {openMenuClassId === cls.id && (
+                <View style={{ position: 'absolute', top: 44, right: 0, backgroundColor: '#fff', borderRadius: 12, elevation: 6, shadowColor: '#000', shadowOpacity: 0.13, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, minWidth: 160, zIndex: 100 }}>
+                  <TouchableOpacity onPress={() => { setOpenMenuClassId(null); openModal('parentList', { classId: cls.id }); }} style={{ flexDirection: 'row', alignItems: 'center', padding: 14, borderBottomWidth: 1, borderColor: '#f0f0f0' }}>
+                    <MaterialIcons name="family-restroom" size={22} color="#b8860b" style={{ marginRight: 10 }} />
+                    <Text style={{ color: '#b8860b', fontWeight: 'bold', fontSize: 15 }}>Parent List</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={() => { setOpenMenuClassId(null); openModal('announce', { classId: cls.id }); }} style={{ flexDirection: 'row', alignItems: 'center', padding: 14, borderBottomWidth: 1, borderColor: '#f0f0f0' }}>
+                    <MaterialIcons name="campaign" size={22} color="#0097a7" style={{ marginRight: 10 }} />
+                    <Text style={{ color: '#0097a7', fontWeight: 'bold', fontSize: 15 }}>Announce</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={() => { setOpenMenuClassId(null); handleDeleteClass(); }} style={{ flexDirection: 'row', alignItems: 'center', padding: 14 }}>
+                    <MaterialIcons name="delete" size={22} color="#ff5a5a" style={{ marginRight: 10 }} />
+                    <Text style={{ color: '#ff5a5a', fontWeight: 'bold', fontSize: 15 }}>Delete</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
             </View>
-        </View>
+          </View>
           <View style={{ marginTop: isSmall ? 8 : 16 }}>
             <AnalyticsPieChartWithLegend data={getPerformanceDistribution(cls.students || [], 'pre')} title="Pretest Performance" />
             <View style={{ height: 10 }} />
@@ -921,12 +1008,6 @@ export default function TeacherDashboard() {
               placeholder="Section (e.g. JDC)"
               value={classSection}
               onChangeText={setClassSection}
-            />
-            <TextInput
-              style={styles.modalInput}
-              placeholder="School"
-              value={classSchool}
-              onChangeText={setClassSchool}
             />
             <View style={styles.modalBtnRow}>
               <Pressable style={styles.modalBtn} onPress={closeModal}><Text style={styles.modalBtnText}>Cancel</Text></Pressable>
@@ -1068,10 +1149,10 @@ export default function TeacherDashboard() {
         const studentsWithBoth = (cls.students ?? []).filter(s => {
           const hasPre = s.preScore && typeof s.preScore.pattern === 'number' && typeof s.preScore.numbers === 'number';
           const hasPost = s.postScore && typeof s.postScore.pattern === 'number' && typeof s.postScore.numbers === 'number';
-          // Consider as 'taken' if at least one part is > 0, or both are zero (i.e., test was submitted)
-          const preTaken = hasPre && s.preScore && (s.preScore.pattern > 0 || s.preScore.numbers > 0 || (s.preScore.pattern === 0 && s.preScore.numbers === 0));
-          const postTaken = hasPost && s.postScore && (s.postScore.pattern > 0 || s.postScore.numbers > 0 || (s.postScore.pattern === 0 && s.postScore.numbers === 0));
-          return preTaken && postTaken;
+          const pre = (s.preScore?.pattern ?? 0) + (s.preScore?.numbers ?? 0);
+          const post = (s.postScore?.pattern ?? 0) + (s.postScore?.numbers ?? 0);
+          // Only include if both pre and post exist and pre > 0 and post > 0
+          return hasPre && hasPost && pre > 0 && post > 0;
         });
         let avgImprovement = 0;
         let avgPost = 0;
@@ -1079,7 +1160,7 @@ export default function TeacherDashboard() {
           const improvements = studentsWithBoth.map(s => {
             const pre = (s.preScore?.pattern ?? 0) + (s.preScore?.numbers ?? 0);
             const post = (s.postScore?.pattern ?? 0) + (s.postScore?.numbers ?? 0);
-            return pre === 0 ? 100 : ((post - pre) / pre) * 100;
+            return pre > 0 ? ((post - pre) / pre) * 100 : 0;
           });
           avgImprovement = Math.round(improvements.reduce((a, b) => a + b, 0) / improvements.length);
           avgPost = Math.round(studentsWithBoth.map(s => (s.postScore?.pattern ?? 0) + (s.postScore?.numbers ?? 0)).reduce((a, b) => a + b, 0) / studentsWithBoth.length);
@@ -1088,66 +1169,58 @@ export default function TeacherDashboard() {
         if (avgImprovement > 0) avgImprovementColor = '#27ae60';
         else if (avgImprovement < 0) avgImprovementColor = '#ff5a5a';
         return (
-          <View style={[styles.modalBox, { backgroundColor: 'rgba(255,255,255,0.98)' }]}> 
-            <Text style={[styles.modalTitle, { marginBottom: 8 }]}>Class List</Text>
-            {/* Class averages */}
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, gap: 10 }}>
-              <View style={{ flex: 1, alignItems: 'center' }}>
+          <View style={[styles.modalBox, { paddingBottom: 80, alignItems: 'stretch', minHeight: 520 }]}> 
+            {/* Title */}
+            <View style={{ alignItems: 'center', marginTop: 18, marginBottom: 10 }}>
+              <Text style={{ fontSize: 26, fontWeight: 'bold', color: '#27ae60', textAlign: 'center', marginBottom: 6, letterSpacing: 1 }}>Class List</Text>
+            </View>
+            {/* Class averages row */}
+            <View style={{ flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 32, marginBottom: 18, backgroundColor: '#f3f6f8', borderRadius: 16, padding: 14, shadowColor: '#27ae60', shadowOpacity: 0.07, shadowRadius: 6, shadowOffset: { width: 0, height: 2 } }}>
+              <View style={{ alignItems: 'center', flex: 1 }}>
+                <MaterialIcons name="trending-up" size={22} color={avgImprovementColor} style={{ marginBottom: 2 }} />
                 <Text style={{ fontWeight: 'bold', fontSize: 14, color: '#222' }}>Avg. Improvement</Text>
                 <Text style={{ fontWeight: 'bold', fontSize: 18, color: avgImprovementColor }}>{avgImprovement > 0 ? '+' : ''}{avgImprovement}%</Text>
               </View>
-              <View style={{ flex: 1, alignItems: 'center' }}>
+              <View style={{ width: 1, backgroundColor: '#e0e6ea', height: 38, alignSelf: 'center', marginHorizontal: 8 }} />
+              <View style={{ alignItems: 'center', flex: 1 }}>
+                <MaterialIcons name="bar-chart" size={22} color="#0097a7" style={{ marginBottom: 2 }} />
                 <Text style={{ fontWeight: 'bold', fontSize: 14, color: '#222' }}>Avg. Post-test</Text>
                 <Text style={{ fontWeight: 'bold', fontSize: 18, color: '#0097a7' }}>{avgPost}/20</Text>
               </View>
             </View>
-            {/* Column header row */}
-            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8, minWidth: 340 }}>
+            {/* Table header */}
+            <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#e0f7fa', borderRadius: 10, paddingVertical: 8, paddingHorizontal: 10, marginBottom: 6, minWidth: 340 }}>
               <TouchableOpacity style={{ flex: 1, minWidth: 90 }} onPress={() => handleSort('name')}>
-                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                  <Text style={{ fontWeight: 'bold', color: '#222', fontSize: 13 }}>Name</Text>
-                  {sortColumn === 'name' ? (
-                    <Text style={{ fontWeight: 'bold', color: '#222', fontSize: 13, marginLeft: 2 }}>{sortAsc ? '\u25B2' : '\u25BC'}</Text>
-                  ) : null}
-                </View>
+                <Text style={{ fontWeight: 'bold', color: '#222', fontSize: 13, textAlign: 'left' }}>Name{sortColumn === 'name' ? (sortAsc ? ' ▲' : ' ▼') : ''}</Text>
               </TouchableOpacity>
+              <View style={{ width: 1, backgroundColor: '#e0e6ea', height: 18, marginHorizontal: 4 }} />
               <TouchableOpacity style={{ minWidth: 90, alignItems: 'center' }} onPress={() => handleSort('pre')}>
-                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                  <Text style={{ fontWeight: 'bold', color: '#222', fontSize: 13 }}>Pre-test</Text>
-                  {sortColumn === 'pre' ? (
-                    <Text style={{ fontWeight: 'bold', color: '#222', fontSize: 13, marginLeft: 2 }}>{sortAsc ? '\u25B2' : '\u25BC'}</Text>
-                  ) : null}
-                </View>
+                <Text style={{ fontWeight: 'bold', color: '#222', fontSize: 13, textAlign: 'center' }}>Pre-test{sortColumn === 'pre' ? (sortAsc ? ' ▲' : ' ▼') : ''}</Text>
               </TouchableOpacity>
+              <View style={{ width: 1, backgroundColor: '#e0e6ea', height: 18, marginHorizontal: 4 }} />
               <TouchableOpacity style={{ minWidth: 90, alignItems: 'center' }} onPress={() => handleSort('post')}>
-                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                  <Text style={{ fontWeight: 'bold', color: '#222', fontSize: 13 }}>Post-test</Text>
-                  {sortColumn === 'post' ? (
-                    <Text style={{ fontWeight: 'bold', color: '#222', fontSize: 13, marginLeft: 2 }}>{sortAsc ? '\u25B2' : '\u25BC'}</Text>
-                  ) : null}
-                </View>
+                <Text style={{ fontWeight: 'bold', color: '#222', fontSize: 13, textAlign: 'center' }}>Post-test{sortColumn === 'post' ? (sortAsc ? ' ▲' : ' ▼') : ''}</Text>
               </TouchableOpacity>
               <View style={{ width: 80 }} />
             </View>
+            {/* Student list */}
             <ScrollView horizontal style={{ maxWidth: '100%' }} contentContainerStyle={{ minWidth: 340 }}>
-            <FlatList
+              <FlatList
                 data={sortedStudents}
-              keyExtractor={item => item.id}
-                style={{ marginVertical: 10, maxHeight: 400, minWidth: 340 }}
+                keyExtractor={item => item.id}
+                style={{ marginVertical: 10, maxHeight: 340, minWidth: 340 }}
                 renderItem={({ item }) => {
                   const preStatus = getStudentTestStatus(item, 'pre');
                   const postStatus = getStudentTestStatus(item, 'post');
                   const bothTaken = preStatus.taken && postStatus.taken;
                   return (
-                    <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderRadius: 18, marginBottom: 14, padding: 14, minWidth: 340, gap: 10, elevation: 2, shadowColor: '#27ae60', shadowOpacity: 0.08, shadowRadius: 6, shadowOffset: { width: 0, height: 2 } }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderRadius: 18, marginBottom: 14, padding: 16, minWidth: 340, gap: 10, elevation: 2, shadowColor: '#27ae60', shadowOpacity: 0.08, shadowRadius: 6, shadowOffset: { width: 0, height: 2 }, justifyContent: 'space-between' }}>
                       <View style={{ flex: 1, minWidth: 90 }}>
                         <TouchableOpacity onPress={() => openModal('studentInfo', { student: item, classId: cls.id })}>
                           <Text style={{ fontWeight: 'bold', fontSize: 15, marginBottom: 2 }}>
                             <Text style={{ color: '#222', fontWeight: 'bold' }}>{item.nickname} </Text>
                             <Text style={{ color: '#0097a7', fontWeight: 'bold' }}>{postStatus.score || 0}/20</Text>
                           </Text>
-                          {/* Debug log for postScore */}
-                          {/* {console.log('ClassListModal student:', item.nickname, 'postScore:', item.postScore)} */}
                           <Text style={{ fontSize: 12, color: '#444' }}>
                             Pattern: {typeof item.postScore?.pattern === 'number' ? item.postScore.pattern : 0}, Numbers: {typeof item.postScore?.numbers === 'number' ? item.postScore.numbers : 0}
                           </Text>
@@ -1238,28 +1311,192 @@ export default function TeacherDashboard() {
                           <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 12 }}>Post-test</Text>
                         </TouchableOpacity>
                       )}
-                      {/* Edit and Delete buttons remain unchanged */}
-                      <TouchableOpacity style={{ backgroundColor: '#0a7ea4', borderRadius: 8, padding: 6, marginRight: 4 }} onPress={() => {
-                        openModal('editStudent', { student: item, classId: cls.id });
-                      }}>
-                        <MaterialIcons name="edit" size={18} color="#fff" />
-                      </TouchableOpacity>
-                      <TouchableOpacity style={{ backgroundColor: '#ff5a5a', borderRadius: 8, padding: 6 }} onPress={() => {
-                        Alert.alert('Delete Student', `Are you sure you want to delete ${item.nickname}?`, [
-                          { text: 'Cancel', style: 'cancel' },
-                          { text: 'Delete', style: 'destructive', onPress: () => {
-                            deleteStudent(item.id);
-                          } },
-                        ]);
-                      }}>
-                        <MaterialIcons name="delete" size={18} color="#fff" />
-                      </TouchableOpacity>
+                      {/* Edit and Delete buttons remain unchanged, grouped at end */}
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        <TouchableOpacity style={{ backgroundColor: '#0a7ea4', borderRadius: 8, padding: 6, marginRight: 2 }} onPress={() => {
+                          openModal('editStudent', { student: item, classId: cls.id });
+                        }}>
+                          <MaterialIcons name="edit" size={18} color="#fff" />
+                        </TouchableOpacity>
+                        <TouchableOpacity style={{ backgroundColor: '#ff5a5a', borderRadius: 8, padding: 6 }} onPress={() => {
+                          Alert.alert('Delete Student', `Are you sure you want to delete ${item.nickname}?`, [
+                            { text: 'Cancel', style: 'cancel' },
+                            { text: 'Delete', style: 'destructive', onPress: () => {
+                              deleteStudent(item.id);
+                            } },
+                          ]);
+                        }}>
+                          <MaterialIcons name="delete" size={18} color="#fff" />
+                        </TouchableOpacity>
+                      </View>
                     </View>
                   );
                 }}
               />
             </ScrollView>
+            {/* Floating Add Student Button (FAB) at bottom right */}
+            <TouchableOpacity
+              onPress={() => openModal('addStudent', { classId: cls.id })}
+              style={{
+                position: 'absolute',
+                right: 24,
+                bottom: 70,
+                backgroundColor: '#27ae60',
+                borderRadius: 32,
+                width: 56,
+                height: 56,
+                alignItems: 'center',
+                justifyContent: 'center',
+                elevation: 6,
+                shadowColor: '#27ae60',
+                shadowOpacity: 0.18,
+                shadowRadius: 10,
+                shadowOffset: { width: 0, height: 2 },
+                zIndex: 20,
+              }}
+              activeOpacity={0.85}
+              onLongPress={() => Alert.alert('Add Student', 'Add a new student to this class.')}
+            >
+              <MaterialIcons name="person-add" size={32} color="#fff" />
+            </TouchableOpacity>
+            {/* Fixed Close button at bottom */}
+            <View style={{ position: 'absolute', bottom: 10, left: 0, right: 0, alignItems: 'center', zIndex: 10, marginBottom: 8 }}>
+              <Pressable style={{ backgroundColor: '#27ae60', borderRadius: 18, minWidth: 160, paddingVertical: 9, alignSelf: 'center', elevation: 2, shadowColor: '#27ae60', shadowOpacity: 0.10, shadowRadius: 6, shadowOffset: { width: 0, height: 2 } }} onPress={closeModal}>
+                <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 14, textAlign: 'center' }}>Close</Text>
+              </Pressable>
+            </View>
+          </View>
+        );
+      case 'parentList':
+        if (!cls) return null;
+        // Calculate average pre and post stars for all parents
+        const avgPreStars = parentListData.length ? Math.round(parentListData.reduce((sum, p) => sum + (p.preStars || 0), 0) / parentListData.length) : 0;
+        const avgPostStars = parentListData.length ? Math.round(parentListData.reduce((sum, p) => sum + (p.postStars || 0), 0) / parentListData.length) : 0;
+        // Helper for large stars
+        const renderLargeStars = (count: number) => (
+          <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 2 }}>
+            {Array.from({ length: 5 }, (_, i) => (
+              <MaterialIcons key={i} name={i < count ? 'star' : 'star-border'} size={26} color={i < count ? '#FFD600' : '#bbb'} style={{ marginRight: 1 }} />
+            ))}
+          </View>
+        );
+        return (
+          <View style={styles.modalBox}>
+            <Text style={[styles.modalTitle, { marginBottom: 8 }]}>Parents List</Text>
+            {/* Average Pre/Post Assessment Stars Row */}
+            <View style={{ flexDirection: 'row', justifyContent: 'center', alignItems: 'flex-end', marginBottom: 10, gap: 24 }}>
+              <View style={{ alignItems: 'center', flex: 1 }}>
+                {renderLargeStars(avgPreStars)}
+                <Text style={{ fontWeight: 'bold', fontSize: 16, color: '#222', marginTop: 0 }}>Average</Text>
+                <Text style={{ fontSize: 13, color: '#888', marginTop: -2 }}>Pre-Assessment</Text>
+              </View>
+              <View style={{ alignItems: 'center', flex: 1 }}>
+                {renderLargeStars(avgPostStars)}
+                <Text style={{ fontWeight: 'bold', fontSize: 16, color: '#222', marginTop: 0 }}>Average</Text>
+                <Text style={{ fontSize: 13, color: '#888', marginTop: -2 }}>Post-Assessment</Text>
+              </View>
+            </View>
+            {parentListLoading ? (
+              <Text style={{ color: '#27ae60', fontSize: 16, textAlign: 'center', marginVertical: 20 }}>Loading...</Text>
+            ) : (
+              <>
+                {/* Header row */}
+                <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8, minWidth: 340 }}>
+                  <Text style={{ flex: 2, fontWeight: 'bold', color: '#222', fontSize: 13 }}>Name</Text>
+                  <Text style={{ flex: 2, fontWeight: 'bold', color: '#222', fontSize: 13 }}>Task Progress</Text>
+                </View>
+                <ScrollView style={{ maxHeight: 400 }}>
+                  {parentListData.map((item, idx) => (
+                    <TouchableOpacity
+                      key={idx}
+                      style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderRadius: 18, marginBottom: 14, padding: 14, minWidth: 340, gap: 10, elevation: 2, shadowColor: '#27ae60', shadowOpacity: 0.08, shadowRadius: 6, shadowOffset: { width: 0, height: 2 } }}
+                      activeOpacity={0.85}
+                      onPress={() => openParentTasksModal(item)}
+                    >
+                      <View style={{ flex: 2 }}>
+                        <Text style={{ fontWeight: 'bold', fontSize: 15, color: '#222' }}>{item.parentName}</Text>
+                        <Text style={{ fontSize: 13, color: '#444' }}>Student: {item.studentName}</Text>
+                        <Text style={{ fontSize: 12, color: '#888' }}>SES: {item.householdIncome || '—'}</Text>
+                        {/* Pre/Post stars */}
+                        <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 2 }}>
+                          <Text style={{ fontSize: 11, color: '#888', marginRight: 2 }}>Pre-Assessment</Text>
+                          {[1,2,3,4,5].map(n => (
+                            <MaterialIcons key={n} name={n <= item.preStars ? 'star' : 'star-border'} size={15} color={n <= item.preStars ? '#FFD600' : '#bbb'} />
+                          ))}
+                          <Text style={{ fontSize: 11, color: '#888', marginLeft: 8 }}>Post-Assessment</Text>
+                          {[1,2,3,4,5].map(n => (
+                            <MaterialIcons key={n} name={n <= item.postStars ? 'star' : 'star-border'} size={15} color={n <= item.postStars ? '#FFD600' : '#bbb'} />
+                          ))}
+                        </View>
+                      </View>
+                      {/* Progress bar */}
+                      <View style={{ flex: 2, alignItems: 'center' }}>
+                        <View style={{ width: 120, height: 28, backgroundColor: '#e6e6e6', borderRadius: 14, justifyContent: 'center', marginBottom: 2 }}>
+                          <View style={{ width: `${item.progressPercent}%`, height: 28, backgroundColor: '#27ae60', borderRadius: 14, position: 'absolute', left: 0, top: 0 }} />
+                          <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 15, position: 'absolute', left: 0, right: 0, textAlign: 'center' }}>{item.progressPercent}%</Text>
+                        </View>
+                      </View>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              </>
+            )}
             <Pressable style={[styles.modalBtn, { alignSelf: 'center', marginTop: 10 }]} onPress={closeModal}><Text style={styles.modalBtnText}>Close</Text></Pressable>
+            {/* Parent Tasks Modal */}
+            <Modal
+              visible={parentTasksModalVisible}
+              transparent
+              animationType="fade"
+              onRequestClose={() => setParentTasksModalVisible(false)}
+            >
+              <View style={styles.modalOverlay}>
+                <View style={styles.modalBox}>
+                  <Text style={styles.modalTitle}>Parent Tasks</Text>
+                  {selectedParentForTasks && (
+                    <>
+                      <Text style={{ fontWeight: 'bold', fontSize: 16, color: '#27ae60', marginBottom: 2 }}>{selectedParentForTasks.parentName}</Text>
+                      <Text style={{ fontSize: 14, color: '#444', marginBottom: 6 }}>Student: {selectedParentForTasks.studentName}</Text>
+                    </>
+                  )}
+                  {parentTasksLoading ? (
+                    <Text style={{ color: '#27ae60', fontSize: 16, textAlign: 'center', marginVertical: 20 }}>Loading tasks...</Text>
+                  ) : parentTasks.length === 0 ? (
+                    <Text style={{ color: '#888', fontSize: 15, textAlign: 'center', marginVertical: 20 }}>No tasks found for this parent.</Text>
+                  ) : (
+                    <ScrollView style={{ maxHeight: 320 }}>
+                      {parentTasks.map((task, idx) => (
+                        <View key={idx} style={{ backgroundColor: '#f9f9f9', borderRadius: 12, padding: 12, marginBottom: 10, elevation: 1 }}>
+                          <Text style={{ fontWeight: 'bold', fontSize: 15, color: '#222', marginBottom: 2 }}>{task.title}</Text>
+                          {task.details && <Text style={{ fontSize: 13, color: '#444', marginBottom: 2 }}>{task.details}</Text>}
+                          {task.objective && <Text style={{ fontSize: 12, color: '#888', marginBottom: 2 }}>Objective: {task.objective}</Text>}
+                          <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 2 }}>
+                            <Text style={{ fontSize: 12, color: '#888', marginRight: 6 }}>Status:</Text>
+                            <Text style={{ fontSize: 12, color: task.status === 'done' ? '#27ae60' : task.status === 'ongoing' ? '#f1c40f' : '#ff5a5a', fontWeight: 'bold' }}>{task.status === 'done' ? 'Done' : task.status === 'ongoing' ? 'Ongoing' : 'Not Done'}</Text>
+                          </View>
+                          {(task.preRating || task.postRating) && (
+                            <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 2 }}>
+                              {task.preRating && (
+                                <>
+                                  <Text style={{ fontSize: 12, color: '#888', marginRight: 2 }}>Simula:</Text>
+                                  {renderStars(task.preRating)}
+                                </>
+                              )}
+                              {task.postRating && (
+                                <>
+                                  <Text style={{ fontSize: 12, color: '#888', marginLeft: 12, marginRight: 2 }}>Matapos:</Text>
+                                  {renderStars(task.postRating)}
+                                </>
+                              )}
+                            </View>
+                          )}
+                        </View>
+                      ))}
+                    </ScrollView>
+                  )}
+                  <Pressable style={[styles.modalBtn, { alignSelf: 'center', marginTop: 10 }]} onPress={() => setParentTasksModalVisible(false)}><Text style={styles.modalBtnText}>Close</Text></Pressable>
+                </View>
+              </View>
+            </Modal>
           </View>
         );
       case 'startTest':
@@ -1311,10 +1548,7 @@ export default function TeacherDashboard() {
             Alert.alert('Error', 'Failed to send announcement.');
           }
         };
-        // Auto-select class if only one class exists and selectedClassId is not set
-        if (modalType === 'announce' && classes.length === 1 && !selectedClassId) {
-          setSelectedClassId(classes[0].id);
-        }
+        // Remove the auto-select logic from here - it's now in useEffect
         return (
           <View style={styles.modalBox}>
             <Text style={styles.modalTitle}>Send Announcement</Text>
@@ -1525,31 +1759,229 @@ export default function TeacherDashboard() {
         let evalPercentColor = '#ffe066';
         if (evalPercent > 0) evalPercentColor = '#27ae60';
         else if (evalPercent < 0) evalPercentColor = '#ff5a5a';
+        // Show only first 3 parent tasks, with option to show more
+        const visibleTasks = evaluationShowAllTasks ? evaluationParentTasks : evaluationParentTasks.slice(0, 3);
         return (
-          <View style={styles.modalBox}>
-            <Text style={styles.modalTitle}>Send Evaluation to Parent</Text>
-            <Text style={styles.modalStat}>Student: <Text style={styles.modalStatNum}>{evalStudent.nickname}</Text></Text>
-            <Text style={styles.modalStat}>Pre-test: <Text style={styles.modalStatNum}>{String(evalPreTotal)}/20</Text> (Pattern: {String(evalPreScore.pattern ?? 0)}, Numbers: {String(evalPreScore.numbers ?? 0)})</Text>
-            <Text style={styles.modalStat}>Post-test: <Text style={styles.modalStatNum}>{String(evalPostTotal)}/20</Text> (Pattern: {String(evalPostScore.pattern ?? 0)}, Numbers: {String(evalPostScore.numbers ?? 0)})</Text>
-            <Text style={styles.modalStat}>Improvement: <Text style={[styles.modalStatNum, { color: evalPercentColor }]}>{evalPercent > 0 ? '+' : ''}{evalPercent}%</Text></Text>
-            <TextInput
-              style={[styles.modalInput, { minHeight: 80, textAlignVertical: 'top' }]}
-              placeholder="Type your evaluation here..."
-              value={evaluationText}
-              onChangeText={setEvaluationText}
-              multiline
-              numberOfLines={4}
-            />
-            <View style={styles.modalBtnRow}>
-              <Pressable style={styles.modalBtn} onPress={closeModal}><Text style={styles.modalBtnText}>Cancel</Text></Pressable>
-              <Pressable style={[styles.modalBtn, styles.modalBtnPrimary]} onPress={() => {
-                Alert.alert('Send Evaluation', 'Are you sure you want to send this evaluation to the parent?', [
-                  { text: 'Cancel', style: 'cancel' },
-                  { text: 'Send', style: 'destructive', onPress: () => { setEvaluationText(''); closeModal(); } },
-                ]);
-              }}><Text style={[styles.modalBtnText, styles.modalBtnTextPrimary]}>Send Evaluation</Text></Pressable>
-            </View>
-          </View>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            style={{ flex: 1 }}
+            keyboardVerticalOffset={Platform.OS === 'ios' ? 80 : 0}
+          >
+            <ScrollView contentContainerStyle={{ flexGrow: 1, justifyContent: 'center' }} keyboardShouldPersistTaps="handled">
+              <View style={[styles.modalBox, { backgroundColor: '#f8f9fa', paddingTop: 18, paddingBottom: 10, alignItems: 'stretch', minHeight: 520, justifyContent: 'flex-start', position: 'relative' }]}> 
+                {/* Student Info Card */}
+                <View style={{ backgroundColor: '#f3f6f8', borderRadius: 14, padding: 12, marginBottom: 12, borderWidth: 1, borderColor: '#e0e6ea', alignItems: 'flex-start' }}>
+                  <Text style={{ fontWeight: '600', color: '#27ae60', fontSize: 15, marginBottom: 2 }}>Student: <Text style={{ color: '#222', fontWeight: 'bold' }}>{evalStudent.nickname}</Text></Text>
+                  <Text style={{ fontSize: 13, color: '#444', marginBottom: 2 }}>
+                    Pre-test: <Text style={{ color: '#0097a7', fontWeight: 'bold' }}>{evalPreTotal}/20</Text> <Text style={{ color: '#888' }}>(Pattern: <Text style={{ color: '#222', fontWeight: 'bold' }}>{evalPreScore.pattern}</Text>, Numbers: <Text style={{ color: '#222', fontWeight: 'bold' }}>{evalPreScore.numbers}</Text>)</Text>
+                  </Text>
+                  <Text style={{ fontSize: 13, color: '#444', marginBottom: 2 }}>
+                    Post-test: <Text style={{ color: '#0097a7', fontWeight: 'bold' }}>{evalPostTotal}/20</Text> <Text style={{ color: '#888' }}>(Pattern: <Text style={{ color: '#222', fontWeight: 'bold' }}>{evalPostScore.pattern}</Text>, Numbers: <Text style={{ color: '#222', fontWeight: 'bold' }}>{evalPostScore.numbers}</Text>)</Text>
+                  </Text>
+                  <Text style={{ fontSize: 13, color: '#444', marginBottom: 0 }}>
+                    Improvement: <Text style={{ color: evalPercentColor, fontWeight: 'bold' }}>{evalPercent > 0 ? '+' : ''}{evalPercent}%</Text>
+                  </Text>
+                </View>
+                {/* Divider */}
+                <View style={{ height: 1, backgroundColor: '#e0e6ea', marginVertical: 8, width: '110%', alignSelf: 'center' }} />
+                {/* Parent Tasks Section */}
+                <Text style={{ fontWeight: '500', color: '#27ae60', fontSize: 14, marginBottom: 4, marginLeft: 2 }}>Parent Tasks</Text>
+                <View style={{ maxHeight: 140, borderWidth: 1, borderColor: '#e0f7e2', borderRadius: 10, overflow: 'hidden', backgroundColor: '#f9f9f9', marginBottom: 8 }}>
+                  <ScrollView style={{ maxHeight: 140 }}>
+                    <View style={{ flexDirection: 'row', paddingVertical: 6, borderBottomWidth: 1, borderColor: '#e0f7e2', backgroundColor: '#e0f7fa' }}>
+                      <ScrollView horizontal showsHorizontalScrollIndicator style={{ flex: 2 }}>
+                        <Text style={{ fontWeight: 'bold', color: '#0097a7', fontSize: 11, paddingLeft: 10, minWidth: 80 }}>Title</Text>
+                      </ScrollView>
+                      <Text style={{ flex: 1, fontWeight: 'bold', color: '#0097a7', fontSize: 13, textAlign: 'center' }}>Pre</Text>
+                      <Text style={{ flex: 1, fontWeight: 'bold', color: '#0097a7', fontSize: 13, textAlign: 'center' }}>Post</Text>
+                    </View>
+                    {visibleTasks.map((task, idx) => (
+                      <View key={idx} style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 7, borderBottomWidth: 1, borderColor: '#f0f0f0', paddingHorizontal: 6 }}>
+                        <ScrollView horizontal showsHorizontalScrollIndicator style={{ flex: 2 }}>
+                          <Text style={{ color: '#222', fontSize: 11, paddingLeft: 6, minWidth: 80 }} numberOfLines={1} ellipsizeMode="tail">{task.title}</Text>
+                        </ScrollView>
+                        <Text style={{ flex: 1, color: '#888', fontSize: 14, textAlign: 'center' }}>{typeof task.preRating === 'number' ? task.preRating : '-'}</Text>
+                        <Text style={{ flex: 1, color: '#888', fontSize: 14, textAlign: 'center' }}>{typeof task.postRating === 'number' ? task.postRating : '-'}</Text>
+                      </View>
+                    ))}
+                    {evaluationParentTasks.length > 3 && !evaluationShowAllTasks && (
+                      <TouchableOpacity onPress={() => setEvaluationShowAllTasks(true)} style={{ padding: 8, alignItems: 'center' }}>
+                        <Text style={{ color: '#27ae60', fontWeight: 'bold', fontSize: 13 }}>Show more...</Text>
+                      </TouchableOpacity>
+                    )}
+                  </ScrollView>
+                </View>
+                {/* Divider */}
+                <View style={{ height: 1, backgroundColor: '#e0e6ea', marginVertical: 8, width: '110%', alignSelf: 'center' }} />
+                {/* Evaluation Textbox Section */}
+                <Text style={{ fontWeight: '500', color: '#27ae60', fontSize: 14, marginBottom: 4, marginLeft: 2 }}>Message to Parent</Text>
+                <View style={{ position: 'relative', marginBottom: 18, minHeight: 220, justifyContent: 'flex-start' }}>
+                  <TextInput
+                    style={[
+                      styles.modalInput,
+                      {
+                        minHeight: 200, // Make textbox bigger
+                        maxHeight: 320,
+                        textAlignVertical: 'top',
+                        paddingRight: 48,
+                        fontSize: 16,
+                        backgroundColor: '#f3f6f8',
+                        borderColor: '#e0e6ea',
+                        borderWidth: 1,
+                        borderRadius: 12,
+                      },
+                    ]}
+                    placeholder="Type your evaluation here..."
+                    value={evaluationText}
+                    onChangeText={setEvaluationText}
+                    multiline
+                    numberOfLines={10}
+                  />
+                  {/* Ghostwriter button (ghost icon + text, floating) */}
+                  <TouchableOpacity
+                    style={{
+                      position: 'absolute',
+                      top: 10,
+                      right: 10,
+                      backgroundColor: '#fff',
+                      borderColor: '#27ae60',
+                      borderWidth: 1,
+                      borderRadius: 20,
+                      padding: 7,
+                      zIndex: 10,
+                      opacity: 0.97,
+                      shadowColor: '#27ae60',
+                      shadowOpacity: 0.10,
+                      shadowRadius: 6,
+                      shadowOffset: { width: 0, height: 2 },
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      minWidth: 44,
+                      minHeight: 36,
+                      justifyContent: 'center',
+                    }}
+                    onPress={async () => {
+                      if (evaluationParentTasksLoading || !evaluationData) return;
+                      // Prepare prompt data
+                      const studentName = evaluationData.student.nickname;
+                      const patternScore = evaluationData.student.postScore?.pattern ?? 0;
+                      const subtractionScore = evaluationData.student.postScore?.numbers ?? 0;
+                      const preTotal = (evaluationData.student.preScore?.pattern ?? 0) + (evaluationData.student.preScore?.numbers ?? 0);
+                      const postTotal = (evaluationData.student.postScore?.pattern ?? 0) + (evaluationData.student.postScore?.numbers ?? 0);
+                      const percentImprovement = preTotal > 0 ? Math.round(((postTotal - preTotal) / preTotal) * 100) : 0;
+                      const taskSummaries = (evaluationParentTasks || []).map(task => ({
+                        title: task.title,
+                        details: task.details || '',
+                        preScore: typeof task.preRating === 'number' ? task.preRating : '-',
+                        postScore: typeof task.postRating === 'number' ? task.postRating : '-',
+                      }));
+                      // Generate prompt
+                      const prompt = generateFeedbackPrompt({
+                        studentName,
+                        patternScore,
+                        subtractionScore,
+                        percentImprovement,
+                        taskSummaries,
+                      });
+                      setEvaluationText('');
+                      setGhostLoading(true);
+                      try {
+                        const response = await askGpt(prompt);
+                        setEvaluationText(response);
+                      } catch (err) {
+                        setEvaluationText('');
+                        Alert.alert('Error', 'Failed to generate evaluation.');
+                      }
+                      setGhostLoading(false);
+                    }}
+                    disabled={ghostLoading || evaluationParentTasksLoading}
+                  >
+                    <MaterialCommunityIcons name="ghost" size={22} color="#27ae60" />
+                    {showGhostwriterText && (
+                      <Text style={{ color: '#27ae60', fontWeight: 'bold', marginLeft: 6, fontSize: 13 }}>Ghostwriter</Text>
+                    )}
+                    {ghostLoading && (
+                      <ActivityIndicator size="small" color="#27ae60" style={{ marginLeft: 6 }} />
+                    )}
+                  </TouchableOpacity>
+                  {/* Loading overlay, centered and matching modal size */}
+                  {ghostLoading && (
+                    <View style={{
+                      position: 'absolute',
+                      left: 0,
+                      right: 0,
+                      top: 0,
+                      bottom: 0,
+                      justifyContent: 'center',
+                      alignItems: 'center',
+                      zIndex: 30,
+                      borderRadius: 22,
+                      width: '100%',
+                      height: '100%',
+                      backgroundColor: 'rgba(255,255,255,0.85)',
+                      transitionProperty: 'opacity',
+                      transitionDuration: '300ms',
+                      opacity: ghostLoading ? 1 : 0,
+                    }}>
+                      <View style={{
+                        backgroundColor: 'rgba(255,255,255,0.97)',
+                        borderRadius: 22,
+                        paddingVertical: 38,
+                        paddingHorizontal: 38,
+                        minWidth: 270,
+                        maxWidth: 340,
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        shadowColor: '#27ae60',
+                        shadowOpacity: 0.13,
+                        shadowRadius: 16,
+                        shadowOffset: { width: 0, height: 4 },
+                      }}>
+                        <ActivityIndicator size="large" color="#27ae60" />
+                        <Text style={{ color: '#27ae60', fontWeight: '600', fontSize: 18, marginTop: 22, textAlign: 'center', maxWidth: 300, lineHeight: 26 }}>
+                          {ghostLoadingStatements[ghostLoadingStatementIdx]}
+                        </Text>
+                      </View>
+                    </View>
+                  )}
+                </View>
+                {/* Action Buttons */}
+                <View style={[styles.modalBtnRow, { marginTop: 2 }]}> 
+                  <Pressable style={[styles.modalBtn, { backgroundColor: 'transparent', elevation: 0 }]} onPress={closeModal}><Text style={{ color: '#888', fontWeight: 'bold', fontSize: 15 }}>Cancel</Text></Pressable>
+                  <Pressable style={[styles.modalBtn, styles.modalBtnPrimary]} onPress={async () => {
+                    if (!evaluationText.trim() || !evaluationData?.student?.parentId) {
+                      Alert.alert('Error', 'No evaluation message or parent found.');
+                      return;
+                    }
+                    const parentId = evaluationData.student.parentId;
+                    // Debug log for parentId
+                    console.log('Sending evaluation to parentId:', parentId);
+                    // Check if parent exists
+                    try {
+                      const parentSnap = await get(ref(db, `Parents/${parentId}`));
+                      if (!parentSnap.exists()) {
+                        Alert.alert('Error', `Parent not found for ID: ${parentId}`);
+                        return;
+                      }
+                      // Use teacherName from state, not redeclare
+                      const evaluationPayload = {
+                        message: evaluationText.trim(),
+                        timestamp: new Date().toISOString(),
+                        teacher: teacherName || 'Teacher',
+                        student: evaluationData.student.nickname,
+                      };
+                      await set(ref(db, `Parents/${parentId}/latestEvaluation`), evaluationPayload);
+                      Alert.alert('Success', 'Evaluation sent to parent!');
+                      setEvaluationText('');
+                      closeModal();
+                    } catch (err) {
+                      Alert.alert('Error', 'Failed to send evaluation.');
+                    }
+                  }}><Text style={[styles.modalBtnText, styles.modalBtnTextPrimary]}>Send Evaluation</Text></Pressable>
+                </View>
+              </View>
+            </ScrollView>
+          </KeyboardAvoidingView>
         );
       case 'studentInfo':
         return (
@@ -1557,7 +1989,27 @@ export default function TeacherDashboard() {
             <Text style={styles.modalTitle}>Student Information</Text>
             <Text style={styles.modalStat}>Student: <Text style={styles.modalStatNum}>{selectedStudent?.nickname}</Text></Text>
             <Text style={styles.modalStat}>Number: <Text style={styles.modalStatNum}>{selectedStudent?.studentNumber}</Text></Text>
-            <Text style={styles.modalStat}>Parent Auth Code: <Text style={styles.modalStatNum}>{parentAuthCode ?? 'Loading...'}</Text></Text>
+            <Text style={styles.modalStat}>
+              Parent Auth Code: 
+              <Text style={styles.modalStatNum}>
+                <Text
+                  selectable
+                  style={{ textDecorationLine: 'underline', color: '#27ae60' }}
+                  onPress={async () => {
+                    if (parentAuthCode) {
+                      await Clipboard.setStringAsync(parentAuthCode);
+                      setCopiedAuthCode(true);
+                      setTimeout(() => setCopiedAuthCode(false), 1200);
+                    }
+                  }}
+                >
+                  {parentAuthCode ?? 'Loading...'}
+                </Text>
+                {copiedAuthCode && (
+                  <Text style={{ color: '#27ae60', marginLeft: 8, fontSize: 13 }}>Copied!</Text>
+                )}
+              </Text>
+            </Text>
             <Text style={styles.modalStat}>Pre-test: <Text style={styles.modalStatNum}>{selectedStudent?.preScore ? String((selectedStudent.preScore.pattern ?? 0) + (selectedStudent.preScore.numbers ?? 0)) : 'N/A'}/20</Text> (Pattern: {String(selectedStudent?.preScore?.pattern ?? 0)}, Numbers: {String(selectedStudent?.preScore?.numbers ?? 0)})</Text>
             <Text style={styles.modalStat}>Post-test: <Text style={styles.modalStatNum}>{selectedStudent?.postScore ? String((selectedStudent.postScore.pattern ?? 0) + (selectedStudent.postScore.numbers ?? 0)) : 'N/A'}/20</Text> (Pattern: {String(selectedStudent?.postScore?.pattern ?? 0)}, Numbers: {String(selectedStudent?.postScore?.numbers ?? 0)})</Text>
             <Pressable style={[styles.modalBtn, { alignSelf: 'center', marginTop: 10 }]} onPress={closeModal}><Text style={styles.modalBtnText}>Close</Text></Pressable>
@@ -1568,56 +2020,70 @@ export default function TeacherDashboard() {
     }
   };
 
+  // Helper to open parent tasks modal and fetch tasks
+  const openParentTasksModal = async (parentObj: any) => {
+    setSelectedParentForTasks(parentObj);
+    setParentTasks([]);
+    setParentTasksLoading(true);
+    setParentTasksModalVisible(true);
+    try {
+      const tasksSnap = await get(ref(db, `Parents/${parentObj.parent.parentId}/tasks`));
+      let loadedTasks = [];
+      if (tasksSnap.exists()) {
+        loadedTasks = tasksSnap.val();
+        if (!Array.isArray(loadedTasks)) loadedTasks = Object.values(loadedTasks);
+      }
+      setParentTasks(loadedTasks);
+    } catch (err) {
+      setParentTasks([]);
+    }
+    setParentTasksLoading(false);
+  };
+
+  // Helper to render stars
+  const renderStars = (count: number) => {
+    return Array.from({ length: 5 }, (_, i) =>
+      <MaterialIcons key={i} name={i < count ? 'star' : 'star-border'} size={15} color={i < count ? '#FFD600' : '#bbb'} style={{ marginRight: 1 }} />
+    );
+  };
+
   return (
     <View style={{ flex: 1 }}>
       <ImageBackground source={bgImage} style={styles.bg} imageStyle={{ opacity: 0.13, resizeMode: 'cover' }}>
         {/* Overlay for better blending (non-blocking) */}
         <View style={styles.bgOverlay} />
-        <SafeAreaView style={{ flex: 1 }}>
-          <ScrollView contentContainerStyle={styles.scrollContent}>
-            <View style={styles.mainContainer}>
-              <View style={styles.headerWrap}>
-                <View style={styles.headerRow}>
-                  <View>
-                    <Text style={styles.welcome}>Welcome,</Text>
-                    <Text style={styles.teacherName}>Teacher {teacherName}</Text>
-                  </View>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                    <TouchableOpacity 
-                      style={[styles.profileBtn, { backgroundColor: refreshing ? '#e0f7fa' : 'rgba(255,255,255,0.7)' }]} 
-                      onPress={refreshData}
-                      disabled={refreshing}
-                    >
-                      <MaterialIcons 
-                        name="refresh" 
-                        size={24} 
-                        color={refreshing ? '#0097a7' : '#27ae60'} 
-                      />
-                    </TouchableOpacity>
-                    <TouchableOpacity style={styles.profileBtn}>
-                      <MaterialCommunityIcons name="account-circle" size={38} color="#27ae60" />
-                    </TouchableOpacity>
-                  </View>
+        <ScrollView contentContainerStyle={styles.scrollContent}>
+          <View style={styles.mainContainer}>
+            <View style={styles.headerWrap}>
+              <View style={styles.headerRow}>
+                <View>
+                  <Text style={styles.welcome}>Welcome,</Text>
+                  <Text style={styles.teacherName}>Teacher {teacherName}</Text>
+                </View>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <TouchableOpacity style={styles.profileBtn} onPress={() => setShowProfileMenu(!showProfileMenu)}>
+                    <MaterialCommunityIcons name="account-circle" size={38} color="#27ae60" />
+                  </TouchableOpacity>
                 </View>
               </View>
-              <View style={dashboardCardStyle}>
-                {/* Title and Add Class in a single row */}
-                <View style={styles.dashboardHeaderRow}>
-                  <Text style={styles.dashboardTitle}>Classrooms</Text>
-                  <TouchableOpacity style={styles.addClassBtn} onPress={() => openModal('addClass')}>
-                    <Text style={styles.addClassBtnText}>Add Class</Text>
-                  </TouchableOpacity>
-              </View>
-                <View style={{ height: 8 }} />
-                {classes.map(cls => (
-                  <React.Fragment key={cls.id}>
-                    {renderClassPanel(cls)}
-                  </React.Fragment>
-                ))}
-              </View>
             </View>
-          </ScrollView>
-        </SafeAreaView>
+            <View style={dashboardCardStyle}>
+              {/* Title and Add Class in a single row */}
+              <View style={styles.dashboardHeaderRow}>
+                <Text style={styles.dashboardTitle}>Classrooms</Text>
+                <TouchableOpacity style={styles.addClassBtn} onPress={() => openModal('addClass')}>
+                  <Text style={styles.addClassBtnText}>Add Class</Text>
+                </TouchableOpacity>
+            </View>
+              <View style={{ height: 8 }} />
+              {classes.map(cls => (
+                <React.Fragment key={cls.id}>
+                  {renderClassPanel(cls)}
+                </React.Fragment>
+              ))}
+            </View>
+          </View>
+        </ScrollView>
         {/* Modal for all actions */}
         <Modal
           visible={modalVisible}
@@ -1630,6 +2096,46 @@ export default function TeacherDashboard() {
           </View>
         </Modal>
       </ImageBackground>
+      {showProfileMenu && (
+        <>
+          {/* Overlay to close menu when clicking outside */}
+          <TouchableOpacity
+            style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 9999 }}
+            activeOpacity={1}
+            onPress={() => setShowProfileMenu(false)}
+          />
+          <View style={{
+            position: 'absolute',
+            top: 56, // adjust as needed to match the icon position
+            right: 24, // adjust as needed to match the icon position
+            backgroundColor: '#fff',
+            borderRadius: 12,
+            elevation: 20,
+            shadowColor: '#000',
+            shadowOpacity: 0.18,
+            shadowRadius: 16,
+            shadowOffset: { width: 0, height: 4 },
+            minWidth: 140,
+            zIndex: 10000
+          }}>
+            <TouchableOpacity
+              onPress={async () => {
+                setShowProfileMenu(false);
+                try {
+                  await signOut(auth);
+                  window.location.reload();
+                } catch (err) {
+                  Alert.alert('Error', 'Failed to log out.');
+                }
+              }}
+              style={{ flexDirection: 'row', alignItems: 'center', padding: 16 }}
+            >
+              <MaterialIcons name="logout" size={22} color="#ff5a5a" style={{ marginRight: 10 }} />
+              <Text style={{ color: '#ff5a5a', fontWeight: 'bold', fontSize: 17 }}>Logout</Text>
+            </TouchableOpacity>
+          </View>
+        </>
+      )}
     </View>
   );
 }
@@ -1648,8 +2154,8 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     alignItems: 'center',
-    paddingBottom: 32,
-    paddingHorizontal: 16,
+    paddingBottom: 0,
+    paddingHorizontal: 0,
     width: '100%',
     minHeight: '100%',
     zIndex: 2,
@@ -1696,7 +2202,7 @@ const styles = StyleSheet.create({
   },
   headerWrap: {
     width: '100%',
-    paddingTop: 16,
+    paddingTop: 0,
     paddingBottom: 16,
     backgroundColor: 'rgba(255,255,255,0.96)',
     borderBottomLeftRadius: 28,
@@ -1715,7 +2221,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     width: '100%',
     paddingHorizontal: 24,
-    marginTop: 0,
+    marginTop: 18,
     marginBottom: 0,
   },
   welcome: {
@@ -1825,7 +2331,7 @@ const styles = StyleSheet.create({
   performanceTitle: {
     fontSize: 21,
     fontWeight: '800',
-    color: '#27ae60',
+    color: '#222',
   },
   announceBtn: {
     backgroundColor: '#27ae60',
@@ -1956,8 +2462,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   modalBox: {
-    width: Dimensions.get('window').width < 400 ? '98%' : '85%',
-    maxWidth: 420,
+    width: Dimensions.get('window').width < 400 ? '98%' : '96%',
+    maxWidth: 500,
+    marginHorizontal: '1%',
     backgroundColor: 'rgba(255,255,255,0.98)',
     borderRadius: 22,
     padding: Dimensions.get('window').width < 400 ? 12 : 24,
@@ -2038,113 +2545,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     backgroundColor: 'rgba(39,174,96,0.08)',
   },
-  studentItem: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    backgroundColor: 'rgba(247,250,253,0.92)',
-    borderRadius: 12,
-    marginBottom: 8,
-    elevation: 2,
-    shadowColor: '#27ae60',
-    shadowOpacity: 0.08,
-    shadowRadius: 6,
-    shadowOffset: { width: 0, height: 2 },
-  },
-  studentInfo: {
-    flex: 1,
-  },
-  studentNickname: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#222',
-    marginBottom: 2,
-  },
-  studentNumber: {
-    fontSize: 13,
-    color: '#888',
-    fontWeight: '500',
-  },
-  testButtons: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  testButton: {
-    borderRadius: 8,
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    minWidth: 70,
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: '#000',
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    shadowOffset: { width: 0, height: 2 },
-  },
-  testButtonText: {
-    color: '#fff',
-    fontWeight: 'bold',
-    fontSize: 12,
-  },
-  preTestButton: {
-    backgroundColor: '#ff5a5a',
-  },
-  postTestButton: {
-    backgroundColor: '#ff9f43',
-  },
-  analyticsCard: {
-    flex: 1,
-    minWidth: 120,
-    maxWidth: 160,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 18,
-    paddingVertical: 8,
-    marginBottom: 16,
-    shadowColor: '#27ae60',
-    shadowOpacity: 0.10,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 4,
-  },
-  analyticsIcon: {
-    marginBottom: 6,
-  },
-  analyticsValue: {
-    fontSize: 22,
-    fontWeight: 'bold',
-    color: '#222',
-    marginBottom: 2,
-  },
-  analyticsLabel: {
-    fontSize: 13,
-    color: '#444',
-    fontWeight: '600',
-    textAlign: 'center',
-  },
-  actionBtn: {
-    flex: 1,
-    borderRadius: 10,
-    paddingVertical: 6,
-    paddingHorizontal: 0,
-    marginHorizontal: 4,
-    minWidth: 90,
-    maxWidth: 180,
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: '#27ae60',
-    shadowOpacity: 0.10,
-    shadowRadius: 6,
-    shadowOffset: { width: 0, height: 2 },
-  },
-  actionBtnText: {
-    color: '#fff',
-    fontWeight: 'bold',
-    fontSize: 15,
-    letterSpacing: 0.2,
-  },
+
   compactCardRow: {
     flexDirection: 'row',
     alignItems: 'center',

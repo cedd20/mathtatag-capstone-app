@@ -654,12 +654,30 @@ export default function AdminDashboard() {
             </View>
           </View>
         </Modal>
-        {/* Profile Menu Modal */}
-        <Modal visible={showProfileMenu} transparent animationType="fade" onRequestClose={() => setShowProfileMenu(false)}>
-          <View style={{ flex: 1, justifyContent: 'flex-start', alignItems: 'flex-end', paddingTop: 180, paddingRight: 50, backgroundColor: 'rgba(0,0,0,0.08)' }}>
-            <View style={{ backgroundColor: '#fff', borderRadius: 14, padding: 8, shadowColor: '#27ae60', shadowOpacity: 0.15, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 4, minWidth: 105 }}>
+        {/* Remove the Modal for profile menu. Instead, add this just before </SafeAreaView> at the end of the main return: */}
+        {showProfileMenu && (
+          <>
+            {/* Overlay to close menu when clicking outside */}
+            <TouchableOpacity
+              style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 9999 }}
+              activeOpacity={1}
+              onPress={() => setShowProfileMenu(false)}
+            />
+            <View style={{
+              position: 'absolute',
+              top: 56, // adjust as needed to match the icon position
+              right: 24, // adjust as needed to match the icon position
+              backgroundColor: '#fff',
+              borderRadius: 12,
+              elevation: 20,
+              shadowColor: '#000',
+              shadowOpacity: 0.18,
+              shadowRadius: 16,
+              shadowOffset: { width: 0, height: 4 },
+              minWidth: 140,
+              zIndex: 10000
+            }}>
               <TouchableOpacity
-                style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 8 }}
                 onPress={async () => {
                   setShowProfileMenu(false);
                   try {
@@ -669,13 +687,14 @@ export default function AdminDashboard() {
                     Alert.alert('Logout Failed', 'Could not log out.');
                   }
                 }}
+                style={{ flexDirection: 'row', alignItems: 'center', padding: 16 }}
               >
-                <MaterialCommunityIcons name="logout" size={20} color="#27ae60" style={{ marginRight: 8 }} />
-                <Text style={{ color: '#27ae60', fontWeight: 'bold', fontSize: 16 }}>Logout</Text>
+                <MaterialIcons name="logout" size={22} color="#ff5a5a" style={{ marginRight: 10 }} />
+                <Text style={{ color: '#ff5a5a', fontWeight: 'bold', fontSize: 17 }}>Logout</Text>
               </TouchableOpacity>
             </View>
-          </View>
-        </Modal>
+          </>
+        )}
       </SafeAreaView>
     </ImageBackground>
   );

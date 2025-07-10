@@ -5,7 +5,7 @@ import { useRouter } from 'expo-router';
 import { signInWithEmailAndPassword } from 'firebase/auth';
 import { get, ref } from 'firebase/database';
 import React, { useEffect, useState } from 'react';
-import { Alert, Dimensions, ImageBackground, KeyboardAvoidingView, Platform, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Alert, Dimensions, ImageBackground, KeyboardAvoidingView, Modal, NativeScrollEvent, NativeSyntheticEvent, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { auth, db } from '../constants/firebaseConfig';
 
 const { width, height } = Dimensions.get('window');
@@ -21,9 +21,29 @@ export default function TeacherLogin() {
     'LeagueSpartan-Bold': require('../assets/fonts/LeagueSpartan-Bold.ttf'),
   });
 
+  const TERMS_KEY = 'teacherAgreedToTerms';
+  const TERMS_TEXT = `MATH TATAG - TERMS AND CONDITIONS\n\n1. Data Privacy: We comply with the Philippine Data Privacy Act (RA 10173). Your personal information is collected, processed, and stored solely for educational purposes. We do not sell or share your data with third parties except as required by law.\n\n2. Consent: By using this app, you consent to the collection and use of your data for learning analytics, progress tracking, and communication with your school.\n\n3. User Responsibilities: You agree to use this app for lawful, educational purposes only. Do not share your login credentials.\n\n4. Intellectual Property: All content, including lessons and activities, is owned by the app developers and licensors.\n\n5. Limitation of Liability: The app is provided as-is. We are not liable for any damages arising from its use.\n\n6. Updates: We may update these terms. Continued use means you accept the new terms.\n\n7. Contact: For privacy concerns, contact your school or the app administrator.\n\nBy agreeing, you acknowledge you have read and understood these terms in accordance with Philippine law.`;
+
+  const [showTermsModal, setShowTermsModal] = useState(false);
+  const [agreedToTerms, setAgreedToTerms] = useState(false);
+  const [canCheckAgreement, setCanCheckAgreement] = useState(false);
+  const [hasScrolledToEnd, setHasScrolledToEnd] = useState(false);
+
   // Load saved credentials on component mount
   useEffect(() => {
     loadSavedCredentials();
+  }, []);
+
+  // On mount, check AsyncStorage for agreement
+  useEffect(() => {
+    AsyncStorage.getItem(TERMS_KEY).then(val => {
+      if (val === 'true') {
+        setAgreedToTerms(true);
+        setCanCheckAgreement(true);
+      } else {
+        setShowTermsModal(true);
+      }
+    });
   }, []);
 
   const loadSavedCredentials = async () => {
@@ -103,6 +123,25 @@ export default function TeacherLogin() {
     }
   };
 
+  // Handler for opening terms modal
+  const openTerms = () => setShowTermsModal(true);
+
+  // Handler for agreeing
+  const handleAgree = async () => {
+    setShowTermsModal(false);
+    setAgreedToTerms(true);
+    setCanCheckAgreement(true);
+    await AsyncStorage.setItem(TERMS_KEY, 'true');
+  };
+
+  // Handler for scroll to end
+  const handleTermsScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const { layoutMeasurement, contentOffset, contentSize } = e.nativeEvent;
+    if (layoutMeasurement.height + contentOffset.y >= contentSize.height - 20) {
+      setHasScrolledToEnd(true);
+    }
+  };
+
   if (!fontsLoaded) return null;
 
   return (
@@ -177,11 +216,26 @@ export default function TeacherLogin() {
             </TouchableOpacity>
           </View>
 
+          <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 10, marginBottom: 6 }}>
+            <TouchableOpacity
+              style={{ width: 22, height: 22, borderRadius: 6, borderWidth: 2, borderColor: '#27ae60', alignItems: 'center', justifyContent: 'center', marginRight: 8 }}
+              disabled={!canCheckAgreement}
+              onPress={() => canCheckAgreement && setAgreedToTerms(v => !v)}
+            >
+              {agreedToTerms ? (
+                <View style={{ width: 14, height: 14, backgroundColor: '#27ae60', borderRadius: 3 }} />
+              ) : null}
+            </TouchableOpacity>
+            <Text style={{ color: '#222', fontSize: 15 }}>
+              I agree to the 
+              <Text style={{ color: '#27ae60', textDecorationLine: 'underline' }} onPress={openTerms}>Terms and Conditions</Text>
+            </Text>
+          </View>
           <TouchableOpacity 
             style={[styles.button, loading && styles.buttonDisabled]} 
             onPress={handleLogin} 
             activeOpacity={0.85}
-            disabled={loading}
+            disabled={loading || !agreedToTerms}
           >
             <Text style={styles.buttonText}>
               {loading ? 'Logging in...' : 'Login'}
@@ -189,6 +243,23 @@ export default function TeacherLogin() {
           </TouchableOpacity>
         </View>
       </KeyboardAvoidingView>
+      <Modal visible={showTermsModal} animationType="slide" transparent>
+        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.18)', justifyContent: 'center', alignItems: 'center' }}>
+          <View style={{ width: '90%', maxWidth: 420, backgroundColor: '#fff', borderRadius: 18, padding: 0, overflow: 'hidden', maxHeight: '85%' }}>
+            <Text style={{ fontWeight: 'bold', fontSize: 20, color: '#27ae60', textAlign: 'center', marginTop: 18, marginBottom: 8 }}>Terms and Conditions</Text>
+            <ScrollView style={{ paddingHorizontal: 18, paddingBottom: 18, maxHeight: 380 }} onScroll={handleTermsScroll} scrollEventThrottle={16} showsVerticalScrollIndicator={true}>
+              <Text style={{ fontSize: 15, color: '#222', lineHeight: 22 }}>{TERMS_TEXT}</Text>
+            </ScrollView>
+            <TouchableOpacity
+              style={{ backgroundColor: hasScrolledToEnd ? '#27ae60' : '#bbb', borderRadius: 16, margin: 18, paddingVertical: 12, alignItems: 'center' }}
+              disabled={!hasScrolledToEnd}
+              onPress={handleAgree}
+            >
+              <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 16 }}>Agree</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </ImageBackground>
   );
 }
