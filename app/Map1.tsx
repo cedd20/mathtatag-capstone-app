@@ -33,6 +33,7 @@ export default function Map1() {
   ]);
   const [currentGame, setCurrentGame] = useState<number | null>(null);
   const logoScale = useRef(new Animated.Value(1)).current;
+  const [showCongrats, setShowCongrats] = useState(false);
 
   // Animation values for each stage
   const stageScales = useRef(STAGES.map(() => new Animated.Value(1))).current;
@@ -82,6 +83,17 @@ export default function Map1() {
         resultPops[idx].setValue(0);
       }
     });
+  }, [stageStatus]);
+
+  // Calculate score summary
+  // Patterns: Game3 (index 2), Numbers: Game1 (0), Game2 (1), Game4 (3), Game5 (4)
+  const patternsCorrect = stageStatus[2] === 'correct' ? 1 : 0;
+  const numbersCorrect = [0, 1, 3, 4].reduce((acc, idx) => acc + (stageStatus[idx] === 'correct' ? 1 : 0), 0);
+
+  useEffect(() => {
+    if (stageStatus.every(s => s !== 'pending')) {
+      setTimeout(() => setShowCongrats(true), 800);
+    }
   }, [stageStatus]);
 
   // Fetch student name on mount
@@ -143,6 +155,19 @@ export default function Map1() {
           resizeMode="contain"
         />
       </View>
+      {/* Congratulatory Panel */}
+      {showCongrats && (
+        <View style={congratsStyles.card}>
+          <Text style={congratsStyles.title}>🎉 Congratulations!</Text>
+          <Text style={congratsStyles.text}>You finished all the games!</Text>
+          <Text style={congratsStyles.score}>Scores:</Text>
+          <Text style={congratsStyles.scoreLine}>Patterns: {patternsCorrect}   |   Numbers: {numbersCorrect}</Text>
+          <Pressable style={congratsStyles.finishBtn} onPress={() => setShowCongrats(false)}>
+            <Text style={congratsStyles.finishBtnText}>Close</Text>
+          </Pressable>
+        </View>
+      )}
+      {/* Map Stages */}
       {STAGES.map((stage, idx) => {
         const isLocked = idx !== 0 && stageStatus[idx - 1] === 'pending';
         const status = stageStatus[idx];
@@ -252,5 +277,69 @@ const styles = StyleSheet.create({
   badgeIcon: {
     width: 40,
     height: 150,
+  },
+});
+
+const congratsStyles = StyleSheet.create({
+  card: {
+    position: 'absolute',
+    top: '28%',
+    left: '7%',
+    right: '7%',
+    backgroundColor: 'rgba(255,255,255,0.98)',
+    borderRadius: 25,
+    padding: 32,
+    alignItems: 'center',
+    zIndex: 300,
+    shadowColor: '#000',
+    shadowOpacity: 0.25,
+    shadowRadius: 15,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 16,
+  },
+  title: {
+    fontSize: 28,
+    fontWeight: 'bold',
+    color: '#27ae60',
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  text: {
+    fontSize: 20,
+    color: '#2c3e50',
+    marginBottom: 18,
+    textAlign: 'center',
+  },
+  score: {
+    fontSize: 22,
+    fontWeight: 'bold',
+    color: '#3498db',
+    marginBottom: 6,
+    textAlign: 'center',
+  },
+  scoreLine: {
+    fontSize: 20,
+    color: '#2c3e50',
+    marginBottom: 18,
+    textAlign: 'center',
+  },
+  finishBtn: {
+    backgroundColor: '#3498db',
+    borderRadius: 20,
+    paddingVertical: 15,
+    paddingHorizontal: 30,
+    marginTop: 8,
+    shadowColor: '#3498db',
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 6,
+    alignSelf: 'center',
+  },
+  finishBtnText: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: 'bold',
+    textAlign: 'center',
   },
 }); 

@@ -23,6 +23,16 @@ export default function Game3({ onComplete }: Game3Props) {
   const [flashColor, setFlashColor] = useState<'red' | 'green' | null>(null);
   const [previewing, setPreviewing] = useState<boolean>(true);
 
+  // Auto-return to map when game is completed
+  useEffect(() => {
+    if (matchingGameCompleted) {
+      const timer = setTimeout(() => {
+        onComplete({ correct: matchingScore > 0 });
+      }, 2000); // Wait 2 seconds after completion before returning
+      return () => clearTimeout(timer);
+    }
+  }, [matchingGameCompleted, matchingScore, onComplete]);
+
   // Initialize matching game
   useEffect(() => {
     if (matchingPairs.length === 0) {
@@ -42,29 +52,39 @@ export default function Game3({ onComplete }: Game3Props) {
 
   const handleCardPress = (cardId: number) => {
     if (selectedCards.length === 2 || matchingPairs.find((card: Card) => card.id === cardId)?.isMatched) return;
+    
+    // If this is the first card being selected
+    if (selectedCards.length === 0) {
+      setSelectedCards([cardId]);
+      return;
+    }
+    
+    // If this is the second card being selected
     const newSelected = [...selectedCards, cardId];
     setSelectedCards(newSelected);
-    if (newSelected.length === 2) {
-      const [firstId, secondId] = newSelected;
-      const firstCard = matchingPairs.find((card: Card) => card.id === firstId);
-      const secondCard = matchingPairs.find((card: Card) => card.id === secondId);
-      if (firstCard && secondCard && firstCard.value === secondCard.value) {
-        setMatchingPairs((prev: Card[]) => prev.map((card: Card) =>
-          card.id === firstId || card.id === secondId
-            ? { ...card, isMatched: true }
-            : card
-        ));
-        setMatchingScore((prev: number) => prev + 1);
-        setSelectedCards([]);
-        const matchedCount = matchingPairs.filter((card: Card) => card.isMatched).length + 2;
-        if (matchedCount === matchingPairs.length) {
-          setTimeout(() => setShowMatchingQuestion(true), 1000);
-        }
-      } else {
-        setTimeout(() => {
-          setSelectedCards([]);
-        }, 1500);
+    
+    const [firstId, secondId] = newSelected;
+    const firstCard = matchingPairs.find((card: Card) => card.id === firstId);
+    const secondCard = matchingPairs.find((card: Card) => card.id === secondId);
+    
+    if (firstCard && secondCard && firstCard.value === secondCard.value) {
+      // Match found - keep both cards visible and mark as matched
+      setMatchingPairs((prev: Card[]) => prev.map((card: Card) =>
+        card.id === firstId || card.id === secondId
+          ? { ...card, isMatched: true }
+          : card
+      ));
+      setMatchingScore((prev: number) => prev + 1);
+      setSelectedCards([]);
+      const matchedCount = matchingPairs.filter((card: Card) => card.isMatched).length + 2;
+      if (matchedCount === matchingPairs.length) {
+        setTimeout(() => setShowMatchingQuestion(true), 1000);
       }
+    } else {
+      // No match - hide the second card after a delay, but keep the first card visible
+      setTimeout(() => {
+        setSelectedCards([firstId]); // Keep only the first card selected
+      }, 1500);
     }
   };
 
@@ -75,6 +95,10 @@ export default function Game3({ onComplete }: Game3Props) {
       setTimeout(() => {
         setFlashColor(null);
         setMatchingGameCompleted(true);
+        // Return to map immediately after flash ends
+        setTimeout(() => {
+          onComplete({ correct: true });
+        }, 100);
       }, 1000);
     } else {
       setFlashColor('red');
@@ -82,6 +106,10 @@ export default function Game3({ onComplete }: Game3Props) {
       setTimeout(() => {
         setFlashColor(null);
         setMatchingGameCompleted(true);
+        // Return to map immediately after flash ends
+        setTimeout(() => {
+          onComplete({ correct: false });
+        }, 100);
       }, 1000);
     }
   };
@@ -154,24 +182,7 @@ export default function Game3({ onComplete }: Game3Props) {
           </View>
         </View>
       )}
-      {matchingGameCompleted && (
-        <View style={styles.completionCard}>
-          {matchingScore > 0 ? (
-            <>
-              <Text style={styles.completionTitle}>🎉 Congratulations!</Text>
-              <Text style={styles.completionText}>You matched all the pairs!</Text>
-            </>
-          ) : (
-            <>
-              <Text style={styles.completionTitle}>Good Try!</Text>
-              <Text style={styles.completionText}>The correct answer was 6 pairs matched.</Text>
-            </>
-          )}
-          <TouchableOpacity style={styles.finishButton} onPress={() => onComplete({ correct: true })}>
-            <Text style={styles.finishButtonText}>Back to Map</Text>
-          </TouchableOpacity>
-        </View>
-      )}
+
       {flashColor && (
         <View style={[styles.flashOverlay, { backgroundColor: flashColor === 'red' ? 'rgba(255,0,0,0.4)' : 'rgba(0,255,0,0.4)' }]} pointerEvents="none" />
       )}
@@ -305,42 +316,6 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: 'bold',
   },
-  completionCard: {
-    position: 'absolute',
-    top: SCREEN_HEIGHT * 0.25,
-    left: 20,
-    right: 20,
-    backgroundColor: 'rgba(255,255,255,0.98)',
-    borderRadius: 25,
-    padding: 30,
-    zIndex: 200,
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOpacity: 0.25,
-    shadowRadius: 15,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 12,
-  },
-  completionTitle: {
-    fontSize: 28,
-    fontWeight: 'bold',
-    color: '#27ae60',
-    marginBottom: 15,
-    textAlign: 'center',
-  },
-  completionText: {
-    fontSize: 18,
-    color: '#2c3e50',
-    marginBottom: 20,
-    textAlign: 'center',
-    lineHeight: 24,
-  },
-  scoreText: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#e74c3c',
-    marginBottom: 25,
-  },
   flashOverlay: {
     position: 'absolute',
     top: 0,
@@ -348,25 +323,6 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     zIndex: 300,
-  },
-  finishButton: {
-    backgroundColor: '#3498db',
-    borderRadius: 20,
-    paddingVertical: 15,
-    paddingHorizontal: 30,
-    marginTop: 18,
-    shadowColor: '#3498db',
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 6,
-    alignSelf: 'center',
-  },
-  finishButtonText: {
-    color: '#fff',
-    fontSize: 18,
-    fontWeight: 'bold',
-    textAlign: 'center',
   },
   rememberMeContainer: {
     position: 'absolute',

@@ -238,7 +238,7 @@ export default function Game1({ onComplete }: Game1Props) {
     <View style={styles.questionCard}>
       <Text style={styles.questionTitle}>How many balloons are still there?</Text>
       <Text style={styles.vocabularyText}>
-        Minuend = 10 | Subtrahend = 5 | Difference = ?
+       10 - 5 = ?
       </Text>
       <View style={styles.answerOptions}>
         {[3, 5, 7].map((option: number) => (

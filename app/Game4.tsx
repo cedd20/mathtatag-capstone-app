@@ -26,12 +26,14 @@ export default function Game4({ onComplete }: Game4Props) {
   const [completed, setCompleted] = useState(false);
   const [showQuestion, setShowQuestion] = useState(false);
   const [selectedAnswer, setSelectedAnswer] = useState<number|null>(null);
-  const [showCompletion, setShowCompletion] = useState(false);
   const [isCorrect, setIsCorrect] = useState(false);
+  const [flashColor, setFlashColor] = useState<'red' | 'green' | null>(null);
   const [guavaPositions, setGuavaPositions] = useState(
     Array(TOTAL_GUAVAS).fill(null).map(() => new Animated.ValueXY({ x: 0, y: 0 }))
   );
   const [guavaGiven, setGuavaGiven] = useState(Array(TOTAL_GUAVAS).fill(false));
+
+
 
   // PanResponders for each guava
   const panResponders = useRef(
@@ -101,28 +103,24 @@ export default function Game4({ onComplete }: Game4Props) {
     { left: BASKET_X + 125, top: BASKET_Y + 98 },
   ];
 
-  // Animate remaining guavas into answer basket
-  React.useEffect(() => {
-    if (showCompletion && !isCorrect) {
-      guavaGiven.forEach((given, idx) => {
-        if (!given) {
-          Animated.timing(guavaPositions[idx], {
-            toValue: { x: 0, y: 60 },
-            duration: 500,
-            useNativeDriver: false,
-          }).start();
-        }
-      });
-    }
-  }, [showCompletion, isCorrect]);
+
 
   const handleAnswer = (ans: number) => {
     setSelectedAnswer(ans);
-    setIsCorrect(ans === REMAINING);
+    const correct = ans === REMAINING;
+    setIsCorrect(correct);
+    
+    if (correct) {
+      setFlashColor('green');
+    } else {
+      setFlashColor('red');
+    }
+    
     setTimeout(() => {
+      setFlashColor(null);
       setShowQuestion(false);
-      setShowCompletion(true);
       setCompleted(true);
+      onComplete({ correct });
     }, 800);
   };
 
@@ -130,10 +128,12 @@ export default function Game4({ onComplete }: Game4Props) {
     <View style={styles.flex}>
       <Image source={BG} style={styles.bg} resizeMode="cover" />
       {/* Number sentence and vocab */}
-      <View style={styles.topPanel}>
-        <Text style={styles.level}>Fruit Drop: Kat’s Guavas</Text>
-        <Text style={styles.sentence}>Number Sentence: <Text style={{fontWeight:'bold'}}>12 – 7 = 5</Text></Text>
-        <Text style={styles.vocab}>Minuend: 12   Subtrahend: 7   Difference: 5</Text>
+      <View style={styles.visualPanel}>
+        <Text style={styles.visualTitle}>Fruit Drop: <Text style={{ color: '#b8860b' }}>Kat’s Guavas</Text></Text>
+        <Text style={styles.visualSentence}>
+          <Text style={{ color: '#222', fontWeight: 'bold' }}>Number Sentence: </Text>
+          <Text style={{ color: '#1a237e', fontWeight: 'bold' }}>Kat has <Text style={{ color: '#e67e22' }}>12</Text> guavas. She gives <Text style={{ color: '#e67e22' }}>7</Text> to her friend Ned. How many does she have left?</Text>
+        </Text>
       </View>
       {/* Ned's hand */}
       <Image source={HAND} style={styles.hand} />
@@ -141,7 +141,7 @@ export default function Game4({ onComplete }: Game4Props) {
       <Image source={GIRL} style={styles.girl} />
       {/* Guavas */}
       {guavaCoords.map(({ left, top }, idx) =>
-        !guavaGiven[idx] || (showCompletion && !isCorrect) ? (
+        !guavaGiven[idx] ? (
           <Animated.View
             key={idx}
             style={[
@@ -151,17 +151,16 @@ export default function Game4({ onComplete }: Game4Props) {
                 top,
                 zIndex: 10 + idx,
                 transform: guavaPositions[idx].getTranslateTransform(),
-                opacity: showCompletion && guavaGiven[idx] && !isCorrect ? 0 : 1,
               },
             ]}
-            {...(!guavaGiven[idx] && !showQuestion && !showCompletion ? panResponders[idx].panHandlers : {})}
+            {...(!guavaGiven[idx] && !showQuestion ? panResponders[idx].panHandlers : {})}
           >
             <Image source={FRUIT} style={styles.guavaImg} />
           </Animated.View>
         ) : null
       )}
       {/* Question Card */}
-      {showQuestion && !showCompletion && (
+      {showQuestion && (
         <View style={questionStyles.card}>
           <Text style={questionStyles.title}>How many guavas does Kat have left?</Text>
           <Text style={questionStyles.sentence}>12 - 7 = ?</Text>
@@ -179,26 +178,10 @@ export default function Game4({ onComplete }: Game4Props) {
           </View>
         </View>
       )}
-      {/* Completion Card */}
-      {showCompletion && (
-        <View style={questionStyles.card}>
-          {isCorrect ? (
-            <>
-              <Text style={questionStyles.completionTitle}>🎉 Congratulations!</Text>
-              <Text style={questionStyles.completionText}>Kat has <Text style={{fontWeight:'bold'}}>{REMAINING}</Text> guavas left!</Text>
-              <Text style={questionStyles.sentence}>12 - 7 = 5</Text>
-            </>
-          ) : (
-            <>
-              <Text style={questionStyles.completionTitle}>Good Try!</Text>
-              <Text style={questionStyles.completionText}>The correct answer was <Text style={{fontWeight:'bold'}}>{REMAINING}</Text> guavas left.</Text>
-              <Text style={questionStyles.sentence}>12 - 7 = 5</Text>
-            </>
-          )}
-          <Pressable style={questionStyles.finishBtn} onPress={() => onComplete({ correct: isCorrect })}>
-            <Text style={questionStyles.finishBtnText}>Back to Map</Text>
-          </Pressable>
-        </View>
+
+      {/* Flash Overlay */}
+      {flashColor && (
+        <View style={[styles.flashOverlay, { backgroundColor: flashColor === 'red' ? 'rgba(255,0,0,0.4)' : 'rgba(0,255,0,0.4)' }]} pointerEvents="none" />
       )}
     </View>
   );
@@ -220,6 +203,38 @@ const styles = StyleSheet.create({
     width: '100%',
     alignItems: 'center',
     zIndex: 100,
+  },
+  visualPanel: {
+    position: 'absolute',
+    top: 60,
+    left: '7%',
+    right: '7%',
+    backgroundColor: 'rgba(255,255,255,0.96)',
+    borderRadius: 22,
+    paddingVertical: 18,
+    paddingHorizontal: 18,
+    alignItems: 'center',
+    zIndex: 120,
+    shadowColor: '#000',
+    shadowOpacity: 0.13,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 7,
+  },
+  visualTitle: {
+    fontSize: 25,
+    fontWeight: 'bold',
+    color: '#3a2d0c',
+    marginBottom: 6,
+    textAlign: 'center',
+    letterSpacing: 0.5,
+  },
+  visualSentence: {
+    fontSize: 18,
+    color: '#2d2d2d',
+    textAlign: 'center',
+    lineHeight: 26,
+    marginBottom: 2,
   },
   level: {
     fontSize: 24,
@@ -280,6 +295,14 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     textAlign: 'center',
   },
+  flashOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 300,
+  },
 });
 
 const questionStyles = StyleSheet.create({
@@ -288,77 +311,91 @@ const questionStyles = StyleSheet.create({
     top: '30%',
     left: '7%',
     right: '7%',
-    backgroundColor: 'rgba(255,255,255,0.97)',
-    borderRadius: 20,
-    padding: 24,
+    backgroundColor: 'rgba(255,255,255,0.98)',
+    borderRadius: 25,
+    padding: 30,
     alignItems: 'center',
     zIndex: 200,
     shadowColor: '#000',
-    shadowOpacity: 0.18,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 10,
+    shadowOpacity: 0.25,
+    shadowRadius: 15,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 12,
   },
   title: {
-    fontSize: 22,
+    fontSize: 24,
     fontWeight: 'bold',
-    color: '#27ae60',
-    marginBottom: 10,
+    color: '#2c3e50',
+    marginBottom: 15,
     textAlign: 'center',
   },
   sentence: {
-    fontSize: 18,
-    color: '#222',
-    marginBottom: 18,
+    fontSize: 16,
+    color: '#3498db',
+    fontWeight: 'bold',
+    marginBottom: 25,
     textAlign: 'center',
   },
   choicesRow: {
     flexDirection: 'row',
-    justifyContent: 'center',
+    justifyContent: 'space-around',
+    width: '100%',
     marginBottom: 10,
     gap: 18,
   },
   choiceBtn: {
-    backgroundColor: '#e0f7fa',
-    borderRadius: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 28,
+    backgroundColor: '#3498db',
+    borderRadius: 20,
+    paddingVertical: 15,
+    paddingHorizontal: 25,
+    minWidth: 80,
+    alignItems: 'center',
+    shadowColor: '#3498db',
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 6,
     marginHorizontal: 8,
-    marginBottom: 0,
-    borderWidth: 2,
-    borderColor: '#27ae60',
   },
   choiceBtnSelected: {
     backgroundColor: '#27ae60',
   },
   choiceText: {
     fontSize: 20,
-    color: '#222',
+    color: '#fff',
     fontWeight: 'bold',
   },
   completionTitle: {
-    fontSize: 24,
+    fontSize: 28,
     fontWeight: 'bold',
     color: '#27ae60',
-    marginBottom: 8,
+    marginBottom: 15,
     textAlign: 'center',
   },
   completionText: {
     fontSize: 18,
-    color: '#222',
-    marginBottom: 8,
+    color: '#2c3e50',
+    marginBottom: 20,
     textAlign: 'center',
+    lineHeight: 24,
   },
   finishBtn: {
-    backgroundColor: '#27ae60',
-    borderRadius: 14,
-    paddingVertical: 10,
-    paddingHorizontal: 32,
+    backgroundColor: '#3498db',
+    borderRadius: 20,
+    paddingVertical: 15,
+    paddingHorizontal: 30,
     marginTop: 18,
+    shadowColor: '#3498db',
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 6,
+    alignSelf: 'center',
   },
   finishBtnText: {
     color: '#fff',
     fontSize: 18,
     fontWeight: 'bold',
+    textAlign: 'center',
   },
 }); 
